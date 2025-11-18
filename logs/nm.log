@@ -1,0 +1,6 @@
+[2025-11-18 23:55:23] [NM] Server started
+[2025-11-18 23:55:26] [NM] SS0 registered with 1 files
+[2025-11-18 23:55:28] [NM] Operation=HEALTH User=SS0 IP=127.0.0.1:10001 ss=0 ip=127.0.0.1 port=10001 -> ALIVE
+[2025-11-18 23:55:38] [NM] Operation=CONNECTION User=us IP=127.0.0.1:60622 New client connected: us@127.0.0.1:60622
+[2025-11-18 23:55:50] [NM] Operation=REQ User=us IP=127.0.0.1:60630 id=691cba2ee9ce8 op=OP_VIEW file=
+[2025-11-18 23:55:50] [NM] Operation=VIEW User=us IP=127.0.0.1:60630 flags=0x3 result=OK
