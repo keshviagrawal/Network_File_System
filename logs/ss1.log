@@ -1,0 +1,163 @@
+[2025-11-21 03:02:32] [SS] Registered successfully with NM
+[2025-11-21 03:02:36] [SS] Operation=REQ User=NM IP=127.0.0.1:61887 op=PING file=
+[2025-11-21 03:02:41] [SS] Operation=REQ User=NM IP=127.0.0.1:61891 op=PING file=
+[2025-11-21 03:02:44] [SS] Operation=REQ User=unew IP=127.0.0.1:61893 op=OP_READ file=see.txt
+[2025-11-21 03:02:44] [SS] Operation=READ User=unew IP=127.0.0.1:61893 SUCCESS file=see.txt user=unew bytes=72 chunks=1
+[2025-11-21 03:02:46] [SS] Operation=REQ User=NM IP=127.0.0.1:61895 op=PING file=
+[2025-11-21 03:02:49] [SS] Operation=REQ User=unew IP=127.0.0.1:61897 op=OP_UNDO file=see.txt
+[2025-11-21 03:02:49] [SS] Operation=UNDO User=unew IP=127.0.0.1:61897 SUCCESS file=see.txt bytes_restored=66 backup_deleted=YES
+[2025-11-21 03:02:49] [SS] Operation=REQ IP=127.0.0.1:61898 op=OP_READ file=see.txt
+[2025-11-21 03:02:49] [SS] Operation=READ IP=127.0.0.1:61898 SUCCESS file=see.txt user= bytes=66 chunks=1
+[2025-11-21 03:02:51] [SS] Operation=REQ User=NM IP=127.0.0.1:61901 op=PING file=
+[2025-11-21 03:02:52] [SS] Operation=REQ User=unew IP=127.0.0.1:61903 op=OP_READ file=see.txt
+[2025-11-21 03:02:52] [SS] Operation=READ User=unew IP=127.0.0.1:61903 SUCCESS file=see.txt user=unew bytes=66 chunks=1
+[2025-11-21 03:02:56] [SS] Operation=REQ User=NM IP=127.0.0.1:61905 op=PING file=
+[2025-11-21 03:03:01] [SS] Operation=REQ User=NM IP=127.0.0.1:61911 op=PING file=
+[2025-11-21 03:03:06] [SS] Operation=REQ User=NM IP=127.0.0.1:61916 op=PING file=
+[2025-11-21 03:03:08] [SS] Operation=REQ User=unew IP=127.0.0.1:61918 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:03:08] [SS] LOCK LOCK_ATTEMPT file=see.txt idx=0 user=unew
+[2025-11-21 03:03:08] [SS] LOCK_ACQUIRED LOCK_ACQUIRED file=see.txt idx=0 by=unew
+[2025-11-21 03:03:11] [SS] Operation=REQ User=NM IP=127.0.0.1:61923 op=PING file=
+[2025-11-21 03:03:13] [SS] EDIT EDIT file=see.txt idx=0 user=unew word_idx=1 new_sents=1
+[2025-11-21 03:03:16] [SS] Operation=REQ User=NM IP=127.0.0.1:61926 op=PING file=
+[2025-11-21 03:03:16] [SS] STOP_RECEIVED STOP (end of edits) received
+[2025-11-21 03:03:16] [SS] ETIRW ETIRW owner=unew
+[2025-11-21 03:03:16] [SS] COMMIT COMMIT file=see.txt ver=1 bytes=71 words=11 chars=71 code=OK
+[2025-11-21 03:03:16] [SS] UNLOCK UNLOCK file=see.txt sentence=0 owner=unew
+[2025-11-21 03:03:16] [SS] STOP_SENT STOP/END acknowledgement sent to client
+[2025-11-21 03:03:16] [SS] [WRITE] see.txt took 7.87s
+[2025-11-21 03:03:16] [SS] Operation=REQ IP=127.0.0.1:61928 op=OP_READ file=see.txt
+[2025-11-21 03:03:16] [SS] Operation=READ IP=127.0.0.1:61928 SUCCESS file=see.txt user= bytes=71 chunks=1
+[2025-11-21 03:03:16] [SS] WRITE_NOTIFY sent to NM for see.txt req_id=691f89147c4d4
+[2025-11-21 03:03:19] [SS] Operation=REQ User=unew IP=127.0.0.1:61931 op=OP_READ file=see.txt
+[2025-11-21 03:03:19] [SS] Operation=READ User=unew IP=127.0.0.1:61931 SUCCESS file=see.txt user=unew bytes=71 chunks=1
+[2025-11-21 03:03:21] [SS] Operation=REQ User=NM IP=127.0.0.1:61933 op=PING file=
+[2025-11-21 03:03:26] [SS] Operation=REQ User=NM IP=127.0.0.1:61935 op=PING file=
+[2025-11-21 03:03:30] [SS] Operation=REQ User=unew IP=127.0.0.1:61937 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:03:30] [SS] LOCK LOCK_ATTEMPT file=see.txt idx=4 user=unew
+[2025-11-21 03:03:30] [SS] LOCK_ACQUIRED LOCK_ACQUIRED file=see.txt idx=4 by=unew
+[2025-11-21 03:03:31] [SS] Operation=REQ User=NM IP=127.0.0.1:61939 op=PING file=
+[2025-11-21 03:03:34] [SS] EDIT EDIT file=see.txt idx=4 user=unew word_idx=0 new_sents=1
+[2025-11-21 03:03:36] [SS] Operation=REQ User=NM IP=127.0.0.1:61941 op=PING file=
+[2025-11-21 03:03:36] [SS] STOP_RECEIVED STOP (end of edits) received
+[2025-11-21 03:03:36] [SS] ETIRW ETIRW owner=unew
+[2025-11-21 03:03:36] [SS] COMMIT COMMIT file=see.txt ver=1 bytes=81 words=12 chars=81 code=OK
+[2025-11-21 03:03:36] [SS] UNLOCK UNLOCK file=see.txt sentence=4 owner=unew
+[2025-11-21 03:03:36] [SS] STOP_SENT STOP/END acknowledgement sent to client
+[2025-11-21 03:03:36] [SS] [WRITE] see.txt took 5.69s
+[2025-11-21 03:03:36] [SS] Operation=REQ IP=127.0.0.1:61943 op=OP_READ file=see.txt
+[2025-11-21 03:03:36] [SS] Operation=READ IP=127.0.0.1:61943 SUCCESS file=see.txt user= bytes=81 chunks=1
+[2025-11-21 03:03:36] [SS] WRITE_NOTIFY sent to NM for see.txt req_id=691f892ac9d55
+[2025-11-21 03:03:39] [SS] Operation=REQ User=unew IP=127.0.0.1:61946 op=OP_READ file=see.txt
+[2025-11-21 03:03:39] [SS] Operation=READ User=unew IP=127.0.0.1:61946 SUCCESS file=see.txt user=unew bytes=81 chunks=1
+[2025-11-21 03:03:41] [SS] Operation=REQ User=NM IP=127.0.0.1:61948 op=PING file=
+[2025-11-21 03:03:46] [SS] Operation=REQ User=NM IP=127.0.0.1:61950 op=PING file=
+[2025-11-21 03:03:46] [SS] Operation=REQ User=unew IP=127.0.0.1:61952 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:03:51] [SS] Operation=REQ User=NM IP=127.0.0.1:61955 op=PING file=
+[2025-11-21 03:03:54] [SS] Operation=REQ User=unew IP=127.0.0.1:61957 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:03:54] [SS] LOCK LOCK_ATTEMPT file=see.txt idx=4 user=unew
+[2025-11-21 03:03:54] [SS] LOCK_ACQUIRED LOCK_ACQUIRED file=see.txt idx=4 by=unew
+[2025-11-21 03:03:56] [SS] Operation=REQ User=NM IP=127.0.0.1:61959 op=PING file=
+[2025-11-21 03:04:01] [SS] Operation=REQ User=NM IP=127.0.0.1:61963 op=PING file=
+[2025-11-21 03:04:01] [SS] EDIT EDIT file=see.txt idx=4 user=unew word_idx=1 new_sents=1
+[2025-11-21 03:04:03] [SS] STOP_RECEIVED STOP (end of edits) received
+[2025-11-21 03:04:03] [SS] ETIRW ETIRW owner=unew
+[2025-11-21 03:04:03] [SS] COMMIT COMMIT file=see.txt ver=1 bytes=82 words=12 chars=82 code=OK
+[2025-11-21 03:04:03] [SS] UNLOCK UNLOCK file=see.txt sentence=4 owner=unew
+[2025-11-21 03:04:03] [SS] STOP_SENT STOP/END acknowledgement sent to client
+[2025-11-21 03:04:03] [SS] [WRITE] see.txt took 9.86s
+[2025-11-21 03:04:03] [SS] Operation=REQ IP=127.0.0.1:61965 op=OP_READ file=see.txt
+[2025-11-21 03:04:03] [SS] Operation=READ IP=127.0.0.1:61965 SUCCESS file=see.txt user= bytes=82 chunks=1
+[2025-11-21 03:04:03] [SS] WRITE_NOTIFY sent to NM for see.txt req_id=691f89427a08
+[2025-11-21 03:04:06] [SS] Operation=REQ User=NM IP=127.0.0.1:61969 op=PING file=
+[2025-11-21 03:04:06] [SS] Operation=REQ User=unew IP=127.0.0.1:61971 op=OP_READ file=see.txt
+[2025-11-21 03:04:06] [SS] Operation=READ User=unew IP=127.0.0.1:61971 SUCCESS file=see.txt user=unew bytes=82 chunks=1
+[2025-11-21 03:04:10] [SS] Operation=REQ User=unew IP=127.0.0.1:61973 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:04:10] [SS] LOCK LOCK_ATTEMPT file=see.txt idx=5 user=unew
+[2025-11-21 03:04:10] [SS] LOCK_ACQUIRED LOCK_ACQUIRED file=see.txt idx=5 by=unew
+[2025-11-21 03:04:11] [SS] Operation=REQ User=NM IP=127.0.0.1:61975 op=PING file=
+[2025-11-21 03:04:14] [SS] STOP_RECEIVED STOP (end of edits) received
+[2025-11-21 03:04:14] [SS] ETIRW ETIRW owner=unew
+[2025-11-21 03:04:14] [SS] COMMIT COMMIT file=see.txt ver=1 bytes=82 words=12 chars=82 code=OK
+[2025-11-21 03:04:14] [SS] UNLOCK UNLOCK file=see.txt sentence=5 owner=unew
+[2025-11-21 03:04:14] [SS] STOP_SENT STOP/END acknowledgement sent to client
+[2025-11-21 03:04:14] [SS] [WRITE] see.txt took 3.12s
+[2025-11-21 03:04:14] [SS] Operation=REQ IP=127.0.0.1:61978 op=OP_READ file=see.txt
+[2025-11-21 03:04:14] [SS] Operation=READ IP=127.0.0.1:61978 SUCCESS file=see.txt user= bytes=82 chunks=1
+[2025-11-21 03:04:14] [SS] WRITE_NOTIFY sent to NM for see.txt req_id=691f8952ed9a9
+[2025-11-21 03:04:16] [SS] Operation=REQ User=NM IP=127.0.0.1:61982 op=PING file=
+[2025-11-21 03:04:21] [SS] Operation=REQ User=NM IP=127.0.0.1:61984 op=PING file=
+[2025-11-21 03:04:26] [SS] Operation=REQ User=NM IP=127.0.0.1:61986 op=PING file=
+[2025-11-21 03:04:31] [SS] Operation=REQ User=NM IP=127.0.0.1:61988 op=PING file=
+[2025-11-21 03:04:36] [SS] Operation=REQ User=NM IP=127.0.0.1:61990 op=PING file=
+[2025-11-21 03:04:41] [SS] Operation=REQ User=NM IP=127.0.0.1:61994 op=PING file=
+[2025-11-21 03:04:42] [SS] Operation=REQ User=hola IP=127.0.0.1:61998 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:04:42] [SS] LOCK LOCK_ATTEMPT file=see.txt idx=0 user=hola
+[2025-11-21 03:04:42] [SS] LOCK_ACQUIRED LOCK_ACQUIRED file=see.txt idx=0 by=hola
+[2025-11-21 03:04:46] [SS] Operation=REQ User=NM IP=127.0.0.1:62000 op=PING file=
+[2025-11-21 03:04:51] [SS] Operation=REQ User=NM IP=127.0.0.1:62003 op=PING file=
+[2025-11-21 03:04:56] [SS] Operation=REQ User=NM IP=127.0.0.1:62005 op=PING file=
+[2025-11-21 03:05:01] [SS] Operation=REQ User=NM IP=127.0.0.1:62007 op=PING file=
+[2025-11-21 03:05:06] [SS] Operation=REQ User=NM IP=127.0.0.1:62010 op=PING file=
+[2025-11-21 03:05:11] [SS] Operation=REQ User=NM IP=127.0.0.1:62012 op=PING file=
+[2025-11-21 03:05:11] [SS] Operation=REQ User=unew IP=127.0.0.1:62014 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:05:11] [SS] LOCK LOCK_ATTEMPT file=see.txt idx=4 user=unew
+[2025-11-21 03:05:11] [SS] LOCK_ACQUIRED LOCK_ACQUIRED file=see.txt idx=4 by=unew
+[2025-11-21 03:05:16] [SS] Operation=REQ User=NM IP=127.0.0.1:62016 op=PING file=
+[2025-11-21 03:05:21] [SS] Operation=REQ User=NM IP=127.0.0.1:62018 op=PING file=
+[2025-11-21 03:05:23] [SS] EDIT EDIT file=see.txt idx=4 user=unew word_idx=1 new_sents=1
+[2025-11-21 03:05:26] [SS] Operation=REQ User=NM IP=127.0.0.1:62020 op=PING file=
+[2025-11-21 03:05:27] [SS] STOP_RECEIVED STOP (end of edits) received
+[2025-11-21 03:05:27] [SS] ETIRW ETIRW owner=unew
+[2025-11-21 03:05:27] [SS] COMMIT COMMIT file=see.txt ver=1 bytes=104 words=17 chars=104 code=OK
+[2025-11-21 03:05:27] [SS] UNLOCK UNLOCK file=see.txt sentence=4 owner=unew
+[2025-11-21 03:05:27] [SS] STOP_SENT STOP/END acknowledgement sent to client
+[2025-11-21 03:05:27] [SS] [WRITE] see.txt took 15.41s
+[2025-11-21 03:05:27] [SS] Operation=REQ IP=127.0.0.1:62022 op=OP_READ file=see.txt
+[2025-11-21 03:05:27] [SS] Operation=READ IP=127.0.0.1:62022 SUCCESS file=see.txt user= bytes=104 chunks=1
+[2025-11-21 03:05:27] [SS] WRITE_NOTIFY sent to NM for see.txt req_id=691f898fe354d
+[2025-11-21 03:05:28] [SS] EDIT EDIT file=see.txt idx=0 user=hola word_idx=3 new_sents=1
+[2025-11-21 03:05:30] [SS] STOP_RECEIVED STOP (end of edits) received
+[2025-11-21 03:05:30] [SS] ETIRW ETIRW owner=hola
+[2025-11-21 03:05:30] [SS] COMMIT COMMIT file=see.txt ver=2 bytes=117 words=21 chars=117 code=OK
+[2025-11-21 03:05:30] [SS] UNLOCK UNLOCK file=see.txt sentence=0 owner=hola
+[2025-11-21 03:05:30] [SS] STOP_SENT STOP/END acknowledgement sent to client
+[2025-11-21 03:05:30] [SS] [WRITE] see.txt took 47.57s
+[2025-11-21 03:05:30] [SS] Operation=REQ IP=127.0.0.1:62025 op=OP_READ file=see.txt
+[2025-11-21 03:05:30] [SS] Operation=READ IP=127.0.0.1:62025 SUCCESS file=see.txt user= bytes=117 chunks=1
+[2025-11-21 03:05:30] [SS] WRITE_NOTIFY sent to NM for see.txt req_id=691f8972a3437
+[2025-11-21 03:05:31] [SS] Operation=REQ User=NM IP=127.0.0.1:62028 op=PING file=
+[2025-11-21 03:05:32] [SS] Operation=REQ User=hola IP=127.0.0.1:62030 op=OP_READ file=see.txt
+[2025-11-21 03:05:32] [SS] Operation=READ User=hola IP=127.0.0.1:62030 SUCCESS file=see.txt user=hola bytes=117 chunks=1
+[2025-11-21 03:05:36] [SS] Operation=REQ User=NM IP=127.0.0.1:62032 op=PING file=
+[2025-11-21 03:05:41] [SS] Operation=REQ User=NM IP=127.0.0.1:62034 op=PING file=
+[2025-11-21 03:05:46] [SS] Operation=REQ User=NM IP=127.0.0.1:62037 op=PING file=
+[2025-11-21 03:05:51] [SS] Operation=REQ User=NM IP=127.0.0.1:62039 op=PING file=
+[2025-11-21 03:05:56] [SS] Operation=REQ User=NM IP=127.0.0.1:62041 op=PING file=
+[2025-11-21 03:06:01] [SS] Operation=REQ User=NM IP=127.0.0.1:62043 op=PING file=
+[2025-11-21 03:06:01] [SS] Operation=REQ User=hola IP=127.0.0.1:62045 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:06:01] [SS] LOCK LOCK_ATTEMPT file=see.txt idx=5 user=hola
+[2025-11-21 03:06:01] [SS] LOCK_ACQUIRED LOCK_ACQUIRED file=see.txt idx=5 by=hola
+[2025-11-21 03:06:06] [SS] Operation=REQ User=NM IP=127.0.0.1:62047 op=PING file=
+[2025-11-21 03:06:11] [SS] Operation=REQ User=NM IP=127.0.0.1:62050 op=PING file=
+[2025-11-21 03:06:11] [SS] EDIT EDIT file=see.txt idx=5 user=hola word_idx=0 new_sents=1
+[2025-11-21 03:06:13] [SS] STOP_RECEIVED STOP (end of edits) received
+[2025-11-21 03:06:13] [SS] ETIRW ETIRW owner=hola
+[2025-11-21 03:06:13] [SS] COMMIT COMMIT file=see.txt ver=1 bytes=122 words=21 chars=122 code=OK
+[2025-11-21 03:06:13] [SS] UNLOCK UNLOCK file=see.txt sentence=5 owner=hola
+[2025-11-21 03:06:13] [SS] STOP_SENT STOP/END acknowledgement sent to client
+[2025-11-21 03:06:13] [SS] [WRITE] see.txt took 12.36s
+[2025-11-21 03:06:13] [SS] Operation=REQ IP=127.0.0.1:62052 op=OP_READ file=see.txt
+[2025-11-21 03:06:13] [SS] Operation=READ IP=127.0.0.1:62052 SUCCESS file=see.txt user= bytes=122 chunks=1
+[2025-11-21 03:06:13] [SS] WRITE_NOTIFY sent to NM for see.txt req_id=691f89c171567
+[2025-11-21 03:06:16] [SS] Operation=REQ User=NM IP=127.0.0.1:62055 op=PING file=
+[2025-11-21 03:06:16] [SS] Operation=REQ User=hola IP=127.0.0.1:62057 op=OP_READ file=see.txt
+[2025-11-21 03:06:16] [SS] Operation=READ User=hola IP=127.0.0.1:62057 SUCCESS file=see.txt user=hola bytes=122 chunks=1
+[2025-11-21 03:06:21] [SS] Operation=REQ User=NM IP=127.0.0.1:62060 op=PING file=
+[2025-11-21 03:06:26] [SS] Operation=REQ User=NM IP=127.0.0.1:62062 op=PING file=
+[2025-11-21 03:06:31] [SS] Operation=REQ User=NM IP=127.0.0.1:62064 op=PING file=
+[2025-11-21 03:06:36] [SS] Operation=REQ User=NM IP=127.0.0.1:62066 op=PING file=
+[2025-11-21 03:06:41] [SS] Operation=REQ User=NM IP=127.0.0.1:62068 op=PING file=
+[2025-11-21 03:06:46] [SS] Operation=REQ User=NM IP=127.0.0.1:62070 op=PING file=
+[2025-11-21 03:06:51] [SS] Operation=REQ User=NM IP=127.0.0.1:62072 op=PING file=
+[2025-11-21 03:06:56] [SS] Operation=REQ User=NM IP=127.0.0.1:62074 op=PING file=

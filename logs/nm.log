@@ -1,6 +1,92 @@
-[2025-11-18 23:55:23] [NM] Server started
-[2025-11-18 23:55:26] [NM] SS0 registered with 1 files
-[2025-11-18 23:55:28] [NM] Operation=HEALTH User=SS0 IP=127.0.0.1:10001 ss=0 ip=127.0.0.1 port=10001 -> ALIVE
-[2025-11-18 23:55:38] [NM] Operation=CONNECTION User=us IP=127.0.0.1:60622 New client connected: us@127.0.0.1:60622
-[2025-11-18 23:55:50] [NM] Operation=REQ User=us IP=127.0.0.1:60630 id=691cba2ee9ce8 op=OP_VIEW file=
-[2025-11-18 23:55:50] [NM] Operation=VIEW User=us IP=127.0.0.1:60630 flags=0x3 result=OK
+[2025-11-21 03:02:26] [NM] Server started
+[2025-11-21 03:02:28] [NM] SS0 registered with 2 files
+[2025-11-21 03:02:31] [NM] Operation=HEALTH User=SS0 IP=127.0.0.1:10002 ss=0 ip=127.0.0.1 port=10002 -> ALIVE
+[2025-11-21 03:02:32] [NM] SS1 registered with 2 files
+[2025-11-21 03:02:36] [NM] Operation=HEALTH User=SS1 IP=127.0.0.1:10001 ss=1 ip=127.0.0.1 port=10001 -> ALIVE
+[2025-11-21 03:02:38] [NM] Operation=CONNECTION User=unew IP=127.0.0.1:61888 New client connected: unew@127.0.0.1:61888
+[2025-11-21 03:02:39] [NM] Operation=REQ User=unew IP=127.0.0.1:61889 id=691f88f7e834e op=OP_VIEW file=
+[2025-11-21 03:02:39] [NM] CHECK_READ ACCESS_GRANTED file=f.txt user=unew role=READER permission=READ
+[2025-11-21 03:02:39] [NM] CHECK_READ ACCESS_GRANTED file=see.txt user=unew role=OWNER permission=READ
+[2025-11-21 03:02:39] [NM] Operation=VIEW User=unew IP=127.0.0.1:61889 flags=0x0 result=OK
+[2025-11-21 03:02:44] [NM] Operation=REQ User=unew IP=127.0.0.1:61892 id=691f88fc549d8 op=OP_RESOLVE_READ file=see.txt
+[2025-11-21 03:02:44] [NM] CHECK_READ ACCESS_GRANTED file=see.txt user=unew role=OWNER permission=READ
+[2025-11-21 03:02:44] [NM] Operation=RESOLVE_READ User=unew IP=127.0.0.1:61892 SUCCESS file=see.txt user=unew resolved_to=127.0.0.1:10001
+[2025-11-21 03:02:49] [NM] Operation=REQ User=unew IP=127.0.0.1:61896 id=691f890197e7c op=OP_UNDO file=see.txt
+[2025-11-21 03:02:49] [NM] CHECK_WRITE ACCESS_GRANTED file=see.txt user=unew role=OWNER permission=WRITE
+[2025-11-21 03:02:49] [NM] Operation=UNDO User=unew IP=127.0.0.1:61896 file=see.txt result=OK
+[2025-11-21 03:02:52] [NM] Operation=REQ User=unew IP=127.0.0.1:61902 id=691f8904b15b4 op=OP_RESOLVE_READ file=see.txt
+[2025-11-21 03:02:52] [NM] CHECK_READ ACCESS_GRANTED file=see.txt user=unew role=OWNER permission=READ
+[2025-11-21 03:02:52] [NM] Operation=RESOLVE_READ User=unew IP=127.0.0.1:61902 SUCCESS file=see.txt user=unew resolved_to=127.0.0.1:10001
+[2025-11-21 03:03:03] [NM] Operation=REQ User=unew IP=127.0.0.1:61914 id=691f890f26913 op=OP_WRITE_REQUEST file=0
+[2025-11-21 03:03:03] [NM] CHECK_WRITE ACCESS_DENIED file=0 user=unew reason=FILE_NOT_FOUND
+[2025-11-21 03:03:03] [NM] Operation=RESOLVE_WRITE User=unew IP=127.0.0.1:61914 FAILED file=0 user=unew reason=FILE_NOT_FOUND
+[2025-11-21 03:03:08] [NM] Operation=REQ User=unew IP=127.0.0.1:61917 id=691f89147c4d4 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:03:08] [NM] CHECK_WRITE ACCESS_GRANTED file=see.txt user=unew role=OWNER permission=WRITE
+[2025-11-21 03:03:08] [NM] Operation=RESOLVE_WRITE User=unew IP=127.0.0.1:61917 SUCCESS file=see.txt user=unew ss=1 resolved_to=127.0.0.1:10001 lookup_time=0.416ms
+[2025-11-21 03:03:16] [NM] Operation=REQ User=SS1 IP=127.0.0.1:61927 id=691f891c5cca4 op=OP_WRITE_NOTIFY file=see.txt
+[2025-11-21 03:03:16] [NM] Operation=ACK User=SS1 IP=127.0.0.1:61927 id=691f89147c4d4 ss=1 ver=1 words=11 chars=71
+[2025-11-21 03:03:16] [NM] CACHE_INV file=see.txt reason=WRITE_COMMIT
+[2025-11-21 03:03:16] [NM] Operation=RESP User=unew IP=127.0.0.1:61917 id=691f89147c4d4 latency=7.871s ver=1
+[2025-11-21 03:03:19] [NM] Operation=REQ User=unew IP=127.0.0.1:61930 id=691f891f195b0 op=OP_RESOLVE_READ file=see.txt
+[2025-11-21 03:03:19] [NM] CHECK_READ ACCESS_GRANTED file=see.txt user=unew role=OWNER permission=READ
+[2025-11-21 03:03:19] [NM] Operation=RESOLVE_READ User=unew IP=127.0.0.1:61930 SUCCESS file=see.txt user=unew resolved_to=127.0.0.1:10001
+[2025-11-21 03:03:30] [NM] Operation=REQ User=unew IP=127.0.0.1:61936 id=691f892ac9d55 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:03:30] [NM] CHECK_WRITE ACCESS_GRANTED file=see.txt user=unew role=OWNER permission=WRITE
+[2025-11-21 03:03:30] [NM] Operation=RESOLVE_WRITE User=unew IP=127.0.0.1:61936 SUCCESS file=see.txt user=unew ss=1 resolved_to=127.0.0.1:10001 lookup_time=0.347ms
+[2025-11-21 03:03:36] [NM] Operation=REQ User=SS1 IP=127.0.0.1:61942 id=691f89307da7f op=OP_WRITE_NOTIFY file=see.txt
+[2025-11-21 03:03:36] [NM] Operation=ACK User=SS1 IP=127.0.0.1:61942 id=691f892ac9d55 ss=1 ver=1 words=12 chars=81
+[2025-11-21 03:03:36] [NM] CACHE_INV file=see.txt reason=WRITE_COMMIT
+[2025-11-21 03:03:36] [NM] Operation=RESP User=unew IP=127.0.0.1:61936 id=691f892ac9d55 latency=5.688s ver=1
+[2025-11-21 03:03:39] [NM] Operation=REQ User=unew IP=127.0.0.1:61945 id=691f893363108 op=OP_RESOLVE_READ file=see.txt
+[2025-11-21 03:03:39] [NM] CHECK_READ ACCESS_GRANTED file=see.txt user=unew role=OWNER permission=READ
+[2025-11-21 03:03:39] [NM] Operation=RESOLVE_READ User=unew IP=127.0.0.1:61945 SUCCESS file=see.txt user=unew resolved_to=127.0.0.1:10001
+[2025-11-21 03:03:46] [NM] Operation=REQ User=unew IP=127.0.0.1:61951 id=691f893a8f5f6 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:03:46] [NM] CHECK_WRITE ACCESS_GRANTED file=see.txt user=unew role=OWNER permission=WRITE
+[2025-11-21 03:03:46] [NM] Operation=RESOLVE_WRITE User=unew IP=127.0.0.1:61951 SUCCESS file=see.txt user=unew ss=1 resolved_to=127.0.0.1:10001 lookup_time=0.325ms
+[2025-11-21 03:03:54] [NM] Operation=REQ User=unew IP=127.0.0.1:61956 id=691f89427a08 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:03:54] [NM] CHECK_WRITE ACCESS_GRANTED file=see.txt user=unew role=OWNER permission=WRITE
+[2025-11-21 03:03:54] [NM] Operation=RESOLVE_WRITE User=unew IP=127.0.0.1:61956 SUCCESS file=see.txt user=unew ss=1 resolved_to=127.0.0.1:10001 lookup_time=0.369ms
+[2025-11-21 03:04:03] [NM] Operation=REQ User=SS1 IP=127.0.0.1:61964 id=691f894bd9d24 op=OP_WRITE_NOTIFY file=see.txt
+[2025-11-21 03:04:03] [NM] Operation=ACK User=SS1 IP=127.0.0.1:61964 id=691f89427a08 ss=1 ver=1 words=12 chars=82
+[2025-11-21 03:04:03] [NM] CACHE_INV file=see.txt reason=WRITE_COMMIT
+[2025-11-21 03:04:03] [NM] Operation=RESP User=unew IP=127.0.0.1:61956 id=691f89427a08 latency=9.861s ver=1
+[2025-11-21 03:04:06] [NM] Operation=REQ User=unew IP=127.0.0.1:61970 id=691f894ef2f06 op=OP_RESOLVE_READ file=see.txt
+[2025-11-21 03:04:06] [NM] CHECK_READ ACCESS_GRANTED file=see.txt user=unew role=OWNER permission=READ
+[2025-11-21 03:04:06] [NM] Operation=RESOLVE_READ User=unew IP=127.0.0.1:61970 SUCCESS file=see.txt user=unew resolved_to=127.0.0.1:10001
+[2025-11-21 03:04:10] [NM] Operation=REQ User=unew IP=127.0.0.1:61972 id=691f8952ed9a9 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:04:10] [NM] CHECK_WRITE ACCESS_GRANTED file=see.txt user=unew role=OWNER permission=WRITE
+[2025-11-21 03:04:10] [NM] Operation=RESOLVE_WRITE User=unew IP=127.0.0.1:61972 SUCCESS file=see.txt user=unew ss=1 resolved_to=127.0.0.1:10001 lookup_time=0.443ms
+[2025-11-21 03:04:14] [NM] Operation=REQ User=SS1 IP=127.0.0.1:61977 id=691f895617e3c op=OP_WRITE_NOTIFY file=see.txt
+[2025-11-21 03:04:14] [NM] Operation=ACK User=SS1 IP=127.0.0.1:61977 id=691f8952ed9a9 ss=1 ver=1 words=12 chars=82
+[2025-11-21 03:04:14] [NM] CACHE_INV file=see.txt reason=WRITE_COMMIT
+[2025-11-21 03:04:14] [NM] Operation=RESP User=unew IP=127.0.0.1:61972 id=691f8952ed9a9 latency=3.124s ver=1
+[2025-11-21 03:04:38] [NM] Operation=CONNECTION User=hola IP=127.0.0.1:61991 New client connected: hola@127.0.0.1:61991
+[2025-11-21 03:04:42] [NM] Operation=REQ User=hola IP=127.0.0.1:61997 id=691f8972a3437 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:04:42] [NM] CHECK_WRITE ACCESS_GRANTED file=see.txt user=hola role=WRITER permission=WRITE
+[2025-11-21 03:04:42] [NM] Operation=RESOLVE_WRITE User=hola IP=127.0.0.1:61997 SUCCESS file=see.txt user=hola ss=1 resolved_to=127.0.0.1:10001 lookup_time=0.503ms
+[2025-11-21 03:05:11] [NM] Operation=REQ User=unew IP=127.0.0.1:62013 id=691f898fe354d op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:05:11] [NM] CHECK_WRITE ACCESS_GRANTED file=see.txt user=unew role=OWNER permission=WRITE
+[2025-11-21 03:05:11] [NM] Operation=RESOLVE_WRITE User=unew IP=127.0.0.1:62013 SUCCESS file=see.txt user=unew ss=1 resolved_to=127.0.0.1:10001 lookup_time=0.285ms
+[2025-11-21 03:05:27] [NM] Operation=REQ User=SS1 IP=127.0.0.1:62021 id=691f899f548db op=OP_WRITE_NOTIFY file=see.txt
+[2025-11-21 03:05:27] [NM] Operation=ACK User=SS1 IP=127.0.0.1:62021 id=691f898fe354d ss=1 ver=1 words=17 chars=104
+[2025-11-21 03:05:27] [NM] CACHE_INV file=see.txt reason=WRITE_COMMIT
+[2025-11-21 03:05:27] [NM] Operation=RESP User=unew IP=127.0.0.1:62013 id=691f898fe354d latency=15.416s ver=1
+[2025-11-21 03:05:30] [NM] Operation=REQ User=SS1 IP=127.0.0.1:62024 id=691f89a23a89b op=OP_WRITE_NOTIFY file=see.txt
+[2025-11-21 03:05:30] [NM] Operation=ACK User=SS1 IP=127.0.0.1:62024 id=691f8972a3437 ss=1 ver=2 words=21 chars=117
+[2025-11-21 03:05:30] [NM] CACHE_INV file=see.txt reason=WRITE_COMMIT
+[2025-11-21 03:05:30] [NM] Operation=RESP User=hola IP=127.0.0.1:61997 id=691f8972a3437 latency=47.571s ver=2
+[2025-11-21 03:05:32] [NM] Operation=REQ User=hola IP=127.0.0.1:62029 id=691f89a4ed91f op=OP_RESOLVE_READ file=see.txt
+[2025-11-21 03:05:32] [NM] CHECK_READ ACCESS_GRANTED file=see.txt user=hola role=READER permission=READ
+[2025-11-21 03:05:32] [NM] Operation=RESOLVE_READ User=hola IP=127.0.0.1:62029 SUCCESS file=see.txt user=hola resolved_to=127.0.0.1:10001
+[2025-11-21 03:06:01] [NM] Operation=REQ User=hola IP=127.0.0.1:62044 id=691f89c171567 op=OP_WRITE_REQUEST file=see.txt
+[2025-11-21 03:06:01] [NM] CHECK_WRITE ACCESS_GRANTED file=see.txt user=hola role=WRITER permission=WRITE
+[2025-11-21 03:06:01] [NM] Operation=RESOLVE_WRITE User=hola IP=127.0.0.1:62044 SUCCESS file=see.txt user=hola ss=1 resolved_to=127.0.0.1:10001 lookup_time=0.487ms
+[2025-11-21 03:06:13] [NM] Operation=REQ User=SS1 IP=127.0.0.1:62051 id=691f89cdc910a op=OP_WRITE_NOTIFY file=see.txt
+[2025-11-21 03:06:13] [NM] Operation=ACK User=SS1 IP=127.0.0.1:62051 id=691f89c171567 ss=1 ver=1 words=21 chars=122
+[2025-11-21 03:06:13] [NM] CACHE_INV file=see.txt reason=WRITE_COMMIT
+[2025-11-21 03:06:13] [NM] Operation=RESP User=hola IP=127.0.0.1:62044 id=691f89c171567 latency=12.359s ver=1
+[2025-11-21 03:06:16] [NM] Operation=REQ User=hola IP=127.0.0.1:62056 id=691f89d0b0e1d op=OP_RESOLVE_READ file=see.txt
+[2025-11-21 03:06:16] [NM] CHECK_READ ACCESS_GRANTED file=see.txt user=hola role=READER permission=READ
+[2025-11-21 03:06:16] [NM] Operation=RESOLVE_READ User=hola IP=127.0.0.1:62056 SUCCESS file=see.txt user=hola resolved_to=127.0.0.1:10001
+[2025-11-21 03:06:58] [NM] Operation=REQ User=unew IP=127.0.0.1:62075 id=691f89faa2282 op=LOGOUT file=
+[2025-11-21 03:06:58] [NM] Operation=LOGOUT User=unew IP=127.0.0.1:62075 user=unew

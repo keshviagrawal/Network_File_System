@@ -4,7 +4,7 @@
 #include <stddef.h>
 #define MAX_FILENAME_LEN 256
 #define MAX_USERNAME_LEN 64
-#define MAX_PAYLOAD_LEN 2048
+#define MAX_PAYLOAD_LEN 8192
 #define CMD_LEN 32
 
 // Operation codes

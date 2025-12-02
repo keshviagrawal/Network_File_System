@@ -33,6 +33,9 @@ static int nm_port_global = 0;
 static char ss_name[64] = "SS0";
 static int ss_id_global = -1;  // Assigned SS ID from NM, -1 until registered
 
+// Global variable for this SS's unique log file
+static char ss_log_file[128] = "logs/ss.log";
+
 static int ss_create_file(const char *fname, const char *owner) {
     // Ensure data directory exists
     struct stat st = {0};
@@ -55,8 +58,8 @@ static int ss_create_file(const char *fname, const char *owner) {
     if (m) {
         char tbuf[32]; time_t now = time(NULL); struct tm *tm_info = localtime(&now);
         strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", tm_info);
-        // readers/writers initialized to owner
-        fprintf(m, "owner=%s\nreaders=%s\nwriters=%s\nwords=0\nchars=0\nlast_modified=%s\n", owner, owner, owner, tbuf);
+        // readers/writers initialized to owner; last_access initialized to creation time
+        fprintf(m, "owner=%s\nreaders=%s\nwriters=%s\nwords=0\nchars=0\nlast_modified=%s\nlast_access=%s\n", owner, owner, owner, tbuf, tbuf);
         fclose(m);
     }
     return SUCCESS;
@@ -73,6 +76,43 @@ typedef struct {
 #define MAX_LOCKS 1024
 static SentenceLock locks[MAX_LOCKS];
 static pthread_mutex_t locks_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Global file-level locks for serializing saves to prevent concurrent write conflicts
+#define MAX_FILE_LOCKS 256
+typedef struct {
+    char filename[256];
+    pthread_mutex_t mutex;
+    int initialized;
+} FileLock;
+static FileLock file_locks[MAX_FILE_LOCKS];
+static pthread_mutex_t file_locks_meta_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static pthread_mutex_t* get_file_lock(const char *filename) {
+    pthread_mutex_lock(&file_locks_meta_mutex);
+    
+    // Check if lock already exists
+    for (int i = 0; i < MAX_FILE_LOCKS; i++) {
+        if (file_locks[i].initialized && strcmp(file_locks[i].filename, filename) == 0) {
+            pthread_mutex_unlock(&file_locks_meta_mutex);
+            return &file_locks[i].mutex;
+        }
+    }
+    
+    // Find empty slot and create new lock
+    for (int i = 0; i < MAX_FILE_LOCKS; i++) {
+        if (!file_locks[i].initialized) {
+            strncpy(file_locks[i].filename, filename, sizeof(file_locks[i].filename) - 1);
+            file_locks[i].filename[sizeof(file_locks[i].filename) - 1] = '\0';
+            pthread_mutex_init(&file_locks[i].mutex, NULL);
+            file_locks[i].initialized = 1;
+            pthread_mutex_unlock(&file_locks_meta_mutex);
+            return &file_locks[i].mutex;
+        }
+    }
+    
+    pthread_mutex_unlock(&file_locks_meta_mutex);
+    return NULL; // No slots available
+}
 
 static SentenceLock* find_lock_slot_nolock(const char *fname, int sentence_idx) {
     // NOTE: caller must hold locks_mutex when calling this
@@ -182,8 +222,9 @@ static int read_version(const char *fname) {
 
 static void update_meta_counts(const char *fname) {
     char mpath[512]; snprintf(mpath, sizeof(mpath), "data/%s.meta", fname);
-    // read existing fields to preserve ACL lists and version
+    // read existing fields to preserve ACL lists, version, and last_access
     char owner[64] = ""; char readers[256] = ""; char writers[256] = "";
+    char last_access[64] = "";
     int version = 0;
     FILE *m = fopen(mpath, "r");
     if (m) {
@@ -200,6 +241,9 @@ static void update_meta_counts(const char *fname) {
                 size_t L = strlen(writers); if (L>0 && (writers[L-1]=='\n' || writers[L-1]=='\r')) writers[L-1]='\0';
             } else if (strncmp(line, "version=", 8) == 0) {
                 version = atoi(line+8);
+            } else if (strncmp(line, "last_access=", 12) == 0) {
+                strncpy(last_access, line+12, sizeof(last_access)-1);
+                size_t L = strlen(last_access); if (L>0 && (last_access[L-1]=='\n' || last_access[L-1]=='\r')) last_access[L-1]='\0';
             }
         }
         fclose(m);
@@ -211,62 +255,165 @@ static void update_meta_counts(const char *fname) {
     // compute last_modified timestamp string
     char tbuf[32]; time_t now = time(NULL); struct tm *tm_info = localtime(&now);
     strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", tm_info);
+    
+    // If last_access doesn't exist, initialize it to last_modified time
+    if (!last_access[0]) {
+        strncpy(last_access, tbuf, sizeof(last_access)-1);
+    }
+    
     m = fopen(mpath, "w");
     if (m) {
-        fprintf(m, "owner=%s\nreaders=%s\nwriters=%s\nwords=%d\nchars=%d\nversion=%d\nlast_modified=%s\n", 
-                owner, readers, writers, w, c, version, tbuf);
+        fprintf(m, "owner=%s\nreaders=%s\nwriters=%s\nwords=%d\nchars=%d\nversion=%d\nlast_modified=%s\nlast_access=%s\n", 
+                owner, readers, writers, w, c, version, tbuf, last_access);
         fclose(m);
     }
 }
 
-// naive sentence split by .,!,? keeping delimiters
-static int split_sentences(char *text, char **starts, int max) {
-    int count=0; char *p=text; char *s=text;
-    while (*p && count<max) {
-        if (*p=='.' || *p=='!' || *p=='?') {
-            char *next = p+1; // include delimiter
-            while (*next==' ') next++;
-            starts[count++] = s;
-            *next = *next; // no-op, markers via indexes
-            s = next;
+
+static int split_content_into_sentences(const char *content, char ***sentences_out) {
+    if (!content || !*content) {
+        *sentences_out = NULL;
+        return 0;
+    }
+
+    // Count number of delimiters (each closes a sentence)
+    int count = 0;
+    for (const char *p = content; *p; p++) {
+        if (*p == '.' || *p == '!' || *p == '?') count++;
+    }
+
+    // Check if there's trailing content after the last delimiter (incomplete sentence)
+    const char *last_delim = NULL;
+    for (const char *p = content; *p; p++) {
+        if (*p == '.' || *p == '!' || *p == '?') last_delim = p;
+    }
+    int has_trailing = 0;
+    if (last_delim) {
+        const char *p = last_delim + 1;
+        while (*p == ' ') p++;
+        if (*p != '\0') has_trailing = 1;
+    }
+
+    // If no delimiters → treat whole thing as one incomplete sentence
+    if (count == 0) {
+        char **arr = malloc(sizeof(char*));
+        arr[0] = malloc(strlen(content) + 1);
+        strcpy(arr[0], content);
+        *sentences_out = arr;
+        return 1;
+    }
+
+    // Allocate space for complete sentences + possible trailing incomplete sentence
+    int total = count + (has_trailing ? 1 : 0);
+    char **result = malloc(sizeof(char*) * total);
+    int idx = 0;
+
+    const char *start = content;
+    const char *p = content;
+
+    while (*p) {
+        if (*p == '.' || *p == '!' || *p == '?') {
+            int len = (p - start) + 1;  // include delimiter
+            char *sent = malloc(len + 1);
+            strncpy(sent, start, len);
+            sent[len] = '\0';
+
+            // Trim leading spaces
+            char *trim_start = sent;
+            while (*trim_start == ' ') trim_start++;
+            if (trim_start != sent) {
+                memmove(sent, trim_start, strlen(trim_start) + 1);
+            }
+
+            // Trim trailing spaces BEFORE delimiter
+            int L = strlen(sent);
+            while (L > 1 && sent[L-2] == ' ' &&
+                   (sent[L-1]=='.' || sent[L-1]=='!' || sent[L-1]=='?')) {
+                // Move delimiter left, overwriting the space
+                sent[L-2] = sent[L-1];
+                sent[L-1] = '\0';
+                L--;
+            }
+
+            result[idx++] = sent;
+
+            p++;  // move past delimiter
+            // Skip spaces to find start of next sentence
+            while (*p == ' ') p++;
+            start = p;  // start points to first char of next sentence
+            continue;
         }
         p++;
     }
-    if (*s && count<max) starts[count++] = s;
-    return count;
+
+    // Add trailing incomplete sentence if present
+    if (has_trailing && start < p) {
+        int len = p - start;
+        char *sent = malloc(len + 1);
+        strncpy(sent, start, len);
+        sent[len] = '\0';
+        
+        // Trim leading spaces
+        char *trim_start = sent;
+        while (*trim_start == ' ') trim_start++;
+        if (trim_start != sent) {
+            memmove(sent, trim_start, strlen(trim_start) + 1);
+        }
+        
+        result[idx++] = sent;
+    }
+
+    *sentences_out = result;
+    return idx;
 }
 
-// Helpers for sentence-level editing
-// Count total sentences in text (0-indexed)
+
 static int count_sentences(const char *text) {
     if (!text || text[0] == '\0') return 0;
-    int count = 0; int in_sentence = 0;
-    for (size_t i = 0; text[i]; i++) {
-        if (text[i] == '.' || text[i] == '!' || text[i] == '?') {
-            if (in_sentence) { count++; in_sentence = 0; }
-            while (text[i+1] == ' ') i++;
-        } else if (text[i] != ' ' && text[i] != '\n' && text[i] != '\r' && text[i] != '\t') {
-            in_sentence = 1;
-        }
+    
+    char **sentences = NULL;
+    int count = split_content_into_sentences(text, &sentences);
+    
+    // Free the allocated sentences
+    for (int i = 0; i < count; i++) {
+        free(sentences[i]);
     }
-    // Count last sentence if no trailing delimiter
-    if (in_sentence) count++;
+    if (sentences) free(sentences);
+    
     return count;
 }
 
-// Check if text ends with a sentence delimiter
+// REPLACE the old has_trailing_delimiter function with this:
+// Check if the last sentence ends with a delimiter
 static int has_trailing_delimiter(const char *text) {
     if (!text || text[0] == '\0') return 0;
-    size_t len = strlen(text);
-    // Skip trailing whitespace
-    while (len > 0 && (text[len-1] == ' ' || text[len-1] == '\n' || text[len-1] == '\r' || text[len-1] == '\t')) {
-        len--;
+    
+    char **sentences = NULL;
+    int count = split_content_into_sentences(text, &sentences);
+    
+    if (count == 0) {
+        if (sentences) free(sentences);
+        return 0;
     }
-    if (len == 0) return 0;
-    char last = text[len-1];
-    return (last == '.' || last == '!' || last == '?');
+    
+    // Check if the last sentence ends with a delimiter
+    const char *last_sent = sentences[count - 1];
+    size_t len = strlen(last_sent);
+    int has_delim = 0;
+    
+    if (len > 0) {
+        char last_char = last_sent[len - 1];
+        has_delim = (last_char == '.' || last_char == '!' || last_char == '?');
+    }
+    
+    // Free the allocated sentences
+    for (int i = 0; i < count; i++) {
+        free(sentences[i]);
+    }
+    free(sentences);
+    
+    return has_delim;
 }
-
 
 static void find_sentence_bounds(const char *text, int target_idx, int *start_out, int *end_out) {
     // target_idx is 0-based
@@ -394,6 +541,7 @@ static char *edit_sentence_build(const char *sentence_in, int word_index, const 
     free(base); return out;
 }
 
+
 static void handle_write_request(int s, Message *req) {
     struct timeval tv_start, tv_end; gettimeofday(&tv_start, NULL);
     int sentence_idx = atoi(req->payload);
@@ -437,7 +585,7 @@ static void handle_write_request(int s, Message *req) {
     // log attempt to acquire lock
     {
         char lbuf[256]; snprintf(lbuf, sizeof(lbuf), "LOCK_ATTEMPT file=%s idx=%d user=%s", req->filename, sentence_idx, req->username);
-        log_event_detailed("logs/ss.log", "SS", "LOCK", req->username, "", 0, lbuf, 1);
+        log_event_detailed(ss_log_file, "SS", "LOCK", req->username, "", 0, lbuf, 1);
     }
     if (slot->locked && strcmp(slot->locked_by, req->username)!=0) {
         pthread_mutex_unlock(&locks_mutex);
@@ -452,15 +600,28 @@ static void handle_write_request(int s, Message *req) {
     pthread_mutex_unlock(&locks_mutex);
     resp.status_code = SUCCESS; strcpy(resp.payload, "LOCKED"); send_message(s, &resp);
     char logbuf[128]; snprintf(logbuf, sizeof(logbuf), "LOCK_ACQUIRED file=%s idx=%d by=%s", req->filename, sentence_idx, req->username);
-    log_event_detailed("logs/ss.log", "SS", "LOCK_ACQUIRED", req->username, "", 0, logbuf, 1);
+    log_event_detailed(ss_log_file, "SS", "LOCK_ACQUIRED", req->username, "", 0, logbuf, 1);
+  
     // Receive edits on same connection: sentence-level editing in-memory
     // Create undo backup only if there is an existing non-empty version
     if (text[0] != '\0') { save_undo(req->filename, text); }
+
+    // Load the LATEST file content at edit time to handle concurrent changes
+    char *latest_content = NULL;
+    if (load_file(req->filename, &latest_content) != SUCCESS) {
+        latest_content = strdup("");
+    }
+    if (!latest_content) latest_content = strdup("");
+
+    // Work with latest_content instead of the old 'text'
+    free(text);
+    text = latest_content;
+
     while (1) {
         Message edit; int n = receive_message(s, &edit); if (n<=0) break;
         if (edit.op_code == OP_WRITE_END || strcmp(edit.command, OP_WRITE_END_S)==0) {
             // STOP received from client signalling end of edits
-            log_event_detailed("logs/ss.log", "SS", "STOP_RECEIVED", req->username, "", 0, "STOP (end of edits) received", 1);
+            log_event_detailed(ss_log_file, "SS", "STOP_RECEIVED", req->username, "", 0, "STOP (end of edits) received", 1);
             break;
         }
         if (edit.op_code == OP_WRITE_EDIT || strcmp(edit.command, OP_WRITE_EDIT_S)==0) {
@@ -477,76 +638,212 @@ static void handle_write_request(int s, Message *req) {
                     send_message(s, &err_msg);
                     continue;
                 }
-                // Find current sentence bounds each time (reflecting prior edits)
-                int s_pos=0, e_pos=0; find_sentence_bounds(text, sentence_idx, &s_pos, &e_pos);
-                // Extract current sentence substring
-                char *sent = str_ndup(text + s_pos, (size_t)(e_pos - s_pos)); if (!sent) continue;
-                // Build new sentence with validation
-                const char *cont = (content[0] ? content : "");
+                
+                // Split content into multiple sentences if it contains delimiters (per spec)
+                char **edit_sentences = NULL;
+                int num_edit_sentences = split_content_into_sentences(content, &edit_sentences);
+                
+                if (num_edit_sentences == 0) {
+                    // Empty content or allocation failure - skip this edit
+                    continue;
+                }
+                
+                // STEP 1: Split the entire current text into sentences
+                char **all_sentences = NULL;
+                int num_all_sentences = split_content_into_sentences(text, &all_sentences);
+                
+                // STEP 2: Get or create the target sentence
+                char *target_sent = NULL;
+                if (sentence_idx < num_all_sentences) {
+                    target_sent = strdup(all_sentences[sentence_idx]);
+                } else {
+                    target_sent = strdup("");  // New sentence
+                }
+                if (!target_sent) target_sent = strdup("");
+                
+                // STEP 3: Apply the first edit sentence to target at word_index
                 int error = 0;
-                char *edited = edit_sentence_build(sent, widx, cont, &error);
-        if (!edited || error) { 
-                    free(sent); 
+                char *edited_first = edit_sentence_build(target_sent, widx, edit_sentences[0], &error);
+                free(target_sent);
+                
+                if (!edited_first || error) {
                     if (error) {
-                        // Send error message for invalid word index
                         Message err_msg; memset(&err_msg,0,sizeof(err_msg)); 
                         err_msg.op_code=OP_WRITE_DENY; strcpy(err_msg.command, OP_WRITE_DENY_S); 
                         err_msg.status_code=ERR_INVALID_INDEX; 
                         strcpy(err_msg.payload, "ERROR: Word index out of range.");
                         send_message(s, &err_msg);
+                    }
+                    for (int j = 0; j < num_edit_sentences; j++) free(edit_sentences[j]);
+                    free(edit_sentences);
+                    for (int j = 0; j < num_all_sentences; j++) free(all_sentences[j]);
+                    if (all_sentences) free(all_sentences);
+                    if (error) {
                         free(text);
-            pthread_mutex_lock(&locks_mutex);
-            slot->locked = 0;
-            pthread_mutex_unlock(&locks_mutex);
+                        pthread_mutex_lock(&locks_mutex);
+                        slot->locked = 0;
+                        pthread_mutex_unlock(&locks_mutex);
                         return;
                     }
-                    continue; 
+                    continue;
                 }
-                // Reconstruct new text
-                size_t before_len = (size_t)s_pos; size_t after_len = strlen(text) - (size_t)e_pos;
-                size_t new_len = before_len + strlen(edited) + after_len;
-                char *new_text = (char*)malloc(new_len + 1);
+                
+                // STEP 4: Rebuild the ENTIRE file with all sentences
+                // Calculate total length needed
+                size_t total_len = 1;
+                
+                // Sentences BEFORE target
+                for (int i = 0; i < sentence_idx && i < num_all_sentences; i++) {
+                    total_len += strlen(all_sentences[i]) + 1;
+                }
+                
+                // Our edited sentence
+                total_len += strlen(edited_first) + 1;
+                
+                // Additional sentences from the edit (if content had multiple sentences)
+                for (int i = 1; i < num_edit_sentences; i++) {
+                    total_len += strlen(edit_sentences[i]) + 1;
+                }
+                
+                // Sentences AFTER target (skip the original sentence_idx)
+                for (int i = sentence_idx + 1; i < num_all_sentences; i++) {
+                    total_len += strlen(all_sentences[i]) + 1;
+                }
+                
+                // Build the new complete file content
+                char *new_text = (char*)malloc(total_len);
                 if (new_text) {
-                    memcpy(new_text, text, before_len);
-                    memcpy(new_text + before_len, edited, strlen(edited));
-                    memcpy(new_text + before_len + strlen(edited), text + e_pos, after_len);
-                    new_text[new_len] = '\0';
-                    free(text); text = new_text;
-                    // Log edit details (sanitized / truncated)
-                    char eds[256]; snprintf(eds, sizeof(eds), "EDIT file=%s idx=%d user=%s word_idx=%d len=%zu", req->filename, sentence_idx, req->username, widx, strlen(content));
-                    log_event_detailed("logs/ss.log", "SS", "EDIT", req->username, "", 0, eds, 1);
+                    new_text[0] = '\0';
+                    
+                    // Add sentences before target
+                    for (int i = 0; i < sentence_idx && i < num_all_sentences; i++) {
+                        if (new_text[0] != '\0') strcat(new_text, " ");
+                        strcat(new_text, all_sentences[i]);
+                    }
+                    
+                    // Add our edited sentence
+                    if (new_text[0] != '\0') strcat(new_text, " ");
+                    strcat(new_text, edited_first);
+                    
+                    // Add additional edit sentences
+                    for (int i = 1; i < num_edit_sentences; i++) {
+                        strcat(new_text, " ");
+                        strcat(new_text, edit_sentences[i]);
+                    }
+                    
+                    // Add sentences after target (skip original sentence_idx)
+                    for (int i = sentence_idx + 1; i < num_all_sentences; i++) {
+                        strcat(new_text, " ");
+                        strcat(new_text, all_sentences[i]);
+                    }
+                    
+                    // Replace text with new version
+                    free(text);
+                    text = new_text;
+                    
+                    char eds[256]; 
+                    snprintf(eds, sizeof(eds), "EDIT file=%s idx=%d user=%s word_idx=%d new_sents=%d", 
+                             req->filename, sentence_idx, req->username, widx, num_edit_sentences);
+                    log_event_detailed(ss_log_file, "SS", "EDIT", req->username, "", 0, eds, 1);
                 }
-                // Defer persistence until ETIRW: do not write intermediary edits to disk.
-                // This ensures concurrent READ/STREAM see original content until commit.
-                free(sent); free(edited);
+                
+                // Cleanup
+                free(edited_first);
+                for (int j = 0; j < num_edit_sentences; j++) free(edit_sentences[j]);
+                free(edit_sentences);
+                for (int j = 0; j < num_all_sentences; j++) free(all_sentences[j]);
+                if (all_sentences) free(all_sentences);
             }
         }
     }
-    // Rebase commit onto latest file contents to avoid clobbering other sentences
-    // Extract final edited sentence from our working text
-    int final_s=0, final_e=0; find_sentence_bounds(text, sentence_idx, &final_s, &final_e);
-    char *final_sentence = str_ndup(text + final_s, (size_t)(final_e - final_s));
-    free(text);
 
-    char *latest=NULL; if (load_file(req->filename, &latest)!=SUCCESS) latest=strdup("");
-    if (!latest) latest = strdup("");
-    int ls=0, le=0; find_sentence_bounds(latest, sentence_idx, &ls, &le);
-    size_t before_len2 = (size_t)ls; size_t after_len2 = strlen(latest) - (size_t)le;
-    size_t new_len2 = before_len2 + (final_sentence?strlen(final_sentence):0) + after_len2;
-    char *rebased = (char*)malloc(new_len2 + 1);
-    if (rebased) {
-        memcpy(rebased, latest, before_len2);
-        if (final_sentence) memcpy(rebased + before_len2, final_sentence, strlen(final_sentence));
-        memcpy(rebased + before_len2 + (final_sentence?strlen(final_sentence):0), latest + le, after_len2);
-        rebased[new_len2] = '\0';
-        save_file(req->filename, rebased);
-        free(rebased);
-    } else {
-        // Fallback: save latest untouched to avoid data loss
-        save_file(req->filename, latest);
+
+    // CRITICAL FIX FOR CONCURRENT WRITES:
+    // Use a file-level lock to serialize the reload-merge-save operation
+    // This ensures that concurrent writes to different sentences don't overwrite each other
+    pthread_mutex_t *file_lock = get_file_lock(req->filename);
+    if (file_lock) {
+        pthread_mutex_lock(file_lock);
     }
-    free(latest);
-    if (final_sentence) free(final_sentence);
+    
+    // Reload the file to get any concurrent changes from other writers
+    char *final_file_content = NULL;
+    if (load_file(req->filename, &final_file_content) != SUCCESS) {
+        final_file_content = strdup("");
+    }
+    if (!final_file_content) final_file_content = strdup("");
+    
+    // Parse both: the current disk version and our edited version
+    char **disk_sentences = NULL;
+    int num_disk_sentences = split_content_into_sentences(final_file_content, &disk_sentences);
+    
+    char **our_sentences = NULL;
+    int num_our_sentences = split_content_into_sentences(text, &our_sentences);
+    
+    // Build merged content: start with disk version, replace only the sentence we edited
+    // Calculate total length
+    size_t merged_len = 1;
+    int max_sentences = (num_disk_sentences > num_our_sentences) ? num_disk_sentences : num_our_sentences;
+    for (int i = 0; i < max_sentences; i++) {
+        if (i == sentence_idx && i < num_our_sentences) {
+            // Use our edited sentence
+            merged_len += strlen(our_sentences[i]) + 1;
+        } else if (i < num_disk_sentences) {
+            // Use disk sentence
+            merged_len += strlen(disk_sentences[i]) + 1;
+        } else if (i < num_our_sentences) {
+            // New sentence we added
+            merged_len += strlen(our_sentences[i]) + 1;
+        }
+    }
+    
+    char *merged_text = (char*)malloc(merged_len);
+    if (merged_text) {
+        merged_text[0] = '\0';
+        int first = 1;
+        
+        for (int i = 0; i < max_sentences; i++) {
+            const char *sent_to_use = NULL;
+            
+            if (i == sentence_idx && i < num_our_sentences) {
+                // This is THE sentence we edited - use our version
+                sent_to_use = our_sentences[i];
+            } else if (i < num_disk_sentences) {
+                // Other sentences - use disk version (may have other clients' edits)
+                sent_to_use = disk_sentences[i];
+            } else if (i < num_our_sentences) {
+                // New sentence we added beyond what's on disk
+                sent_to_use = our_sentences[i];
+            }
+            
+            if (sent_to_use) {
+                if (!first) strcat(merged_text, " ");
+                strcat(merged_text, sent_to_use);
+                first = 0;
+            }
+        }
+        
+        // Use merged content for saving
+        free(text);
+        text = merged_text;
+    }
+    
+    // Cleanup temporary sentence arrays
+    for (int i = 0; i < num_disk_sentences; i++) free(disk_sentences[i]);
+    if (disk_sentences) free(disk_sentences);
+    for (int i = 0; i < num_our_sentences; i++) free(our_sentences[i]);
+    if (our_sentences) free(our_sentences);
+    free(final_file_content);
+
+    save_file(req->filename, text);
+    
+    // Release file lock after save
+    if (file_lock) {
+        pthread_mutex_unlock(file_lock);
+    }
+    
+    free(text);
+    
     // refresh meta counts after write
     update_meta_counts(req->filename);
     
@@ -558,28 +855,28 @@ static void handle_write_request(int s, Message *req) {
     // Log ETIRW (end-to-intermediate->real write) and COMMIT/UNLOCK explicitly
     char etirwbuf[128]; 
     snprintf(etirwbuf, sizeof(etirwbuf), "ETIRW owner=%s", req->username);
-    log_event_detailed("logs/ss.log", "SS", "ETIRW", req->username, "", 0, etirwbuf, 1);
+    log_event_detailed(ss_log_file, "SS", "ETIRW", req->username, "", 0, etirwbuf, 1);
     
     char commitbuf[256];
     snprintf(commitbuf, sizeof(commitbuf), "COMMIT file=%s ver=%d bytes=%d words=%d chars=%d code=OK", 
              req->filename, version, chars, words, chars);
-    log_event_detailed("logs/ss.log", "SS", "COMMIT", req->username, "", 0, commitbuf, 1);
+    log_event_detailed(ss_log_file, "SS", "COMMIT", req->username, "", 0, commitbuf, 1);
     
     char unlockbuf[128]; 
     snprintf(unlockbuf, sizeof(unlockbuf), "UNLOCK file=%s sentence=%d owner=%s", 
              req->filename, sentence_idx, req->username);
-    log_event_detailed("logs/ss.log", "SS", "UNLOCK", req->username, "", 0, unlockbuf, 1);
+    log_event_detailed(ss_log_file, "SS", "UNLOCK", req->username, "", 0, unlockbuf, 1);
     pthread_mutex_lock(&locks_mutex);
     slot->locked = 0;
     pthread_mutex_unlock(&locks_mutex);
     Message ack; memset(&ack,0,sizeof(ack)); ack.op_code=OP_WRITE_ACK; strcpy(ack.command, OP_WRITE_ACK_S); ack.status_code=SUCCESS; strcpy(ack.payload, "WRITE OK");
     // Indicate STOP sent and then send ACK
-    log_event_detailed("logs/ss.log", "SS", "STOP_SENT", req->username, "", 0, "STOP/END acknowledgement sent to client", 1);
+    log_event_detailed(ss_log_file, "SS", "STOP_SENT", req->username, "", 0, "STOP/END acknowledgement sent to client", 1);
     send_message(s, &ack);
     gettimeofday(&tv_end, NULL);
     double elapsed = (tv_end.tv_sec - tv_start.tv_sec) + (tv_end.tv_usec - tv_start.tv_usec)/1000000.0;
     char donebuf[128]; snprintf(donebuf, sizeof(donebuf), "[WRITE] %s took %.2fs", req->filename, elapsed);
-    log_event("logs/ss.log", "SS", donebuf);
+    log_event(ss_log_file, "SS", donebuf);
 
     // Prepare a WRITE_NOTIFY message to inform NM of commit details (ACK path)
     {
@@ -605,13 +902,15 @@ static void handle_write_request(int s, Message *req) {
                 Message r; receive_message(nmsock, &r);
                 close(nmsock);
                 char lmsg[256]; snprintf(lmsg, sizeof(lmsg), "WRITE_NOTIFY sent to NM for %s req_id=%s", req->filename, rid ? rid : "");
-                log_event("logs/ss.log", "SS", lmsg);
+                log_event(ss_log_file, "SS", lmsg);
             } else {
-                log_event("logs/ss.log", "SS", "WRITE_NOTIFY failed to connect to NM");
+                log_event(ss_log_file, "SS", "WRITE_NOTIFY failed to connect to NM");
             }
         }
     }
 }
+
+
 static int ss_handle_read(const char *fname, int s, const char *username, const char *client_ip, int client_port) {
     char path[512];
     snprintf(path, sizeof(path), "data/%s", fname);
@@ -624,14 +923,16 @@ static int ss_handle_read(const char *fname, int s, const char *username, const 
         err.status_code = ERR_FILE_NOT_FOUND;
         strcpy(err.payload, "File not found");
         send_message(s, &err);
-        char log_buf[128];
-        snprintf(log_buf, sizeof(log_buf), "file=%s result=NOT_FOUND", fname);
-        log_event_detailed("logs/ss.log", "SS", "READ", username, client_ip, client_port, log_buf, 1);
+        char log_buf[256];
+        snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=FILE_NOT_FOUND path=%s", 
+                 fname, username, path);
+        log_event_detailed(ss_log_file, "SS", "READ", username, client_ip, client_port, log_buf, 1);
         return ERR_FILE_NOT_FOUND;
     }
 
     // Stream the file in chunks so large files are supported
     size_t total = 0;
+    int chunk_count = 0;
     char buf[1500];
     while (1) {
         size_t n = fread(buf, 1, sizeof(buf)-1, f);
@@ -642,8 +943,16 @@ static int ss_handle_read(const char *fname, int s, const char *username, const 
         part.status_code = SUCCESS;
         strncpy(part.filename, fname, sizeof(part.filename)-1);
         strncpy(part.payload, buf, sizeof(part.payload)-1);
-        if (send_message(s, &part) <= 0) { fclose(f); return ERR_INTERNAL; }
+        if (send_message(s, &part) <= 0) { 
+            fclose(f); 
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s bytes_sent=%zu chunks=%d reason=SOCKET_ERROR", 
+                     fname, username, total, chunk_count);
+            log_event_detailed(ss_log_file, "SS", "READ", username, client_ip, client_port, log_buf, 1);
+            return ERR_INTERNAL; 
+        }
         total += n;
+        chunk_count++;
     }
     fclose(f);
     Message end; memset(&end, 0, sizeof(end));
@@ -652,9 +961,10 @@ static int ss_handle_read(const char *fname, int s, const char *username, const 
     strncpy(end.filename, fname, sizeof(end.filename)-1);
     send_message(s, &end);
 
-    char log_buf[128];
-    snprintf(log_buf, sizeof(log_buf), "file=%s bytes=%zu result=OK", fname, total);
-    log_event_detailed("logs/ss.log", "SS", "READ", username, client_ip, client_port, log_buf, 1);
+    char log_buf[256];
+    snprintf(log_buf, sizeof(log_buf), "SUCCESS file=%s user=%s bytes=%zu chunks=%d", 
+             fname, username, total, chunk_count);
+    log_event_detailed(ss_log_file, "SS", "READ", username, client_ip, client_port, log_buf, 1);
     return SUCCESS;
 }
 
@@ -670,9 +980,10 @@ static int ss_handle_stream(const char *fname, int s, const char *username, cons
         strcpy(resp.payload, "File not found");
         send_message(s, &resp);
         
-        char log_buf[128];
-        snprintf(log_buf, sizeof(log_buf), "file=%s result=NOT_FOUND", fname);
-        log_event_detailed("logs/ss.log", "SS", "STREAM", username, client_ip, client_port, log_buf, 1);
+        char log_buf[256];
+        snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=FILE_NOT_FOUND path=%s", 
+                 fname, username, path);
+        log_event_detailed(ss_log_file, "SS", "STREAM", username, client_ip, client_port, log_buf, 1);
         return ERR_FILE_NOT_FOUND;
     }
     
@@ -684,13 +995,17 @@ static int ss_handle_stream(const char *fname, int s, const char *username, cons
     char *saveptr = NULL; 
     char *tok = strtok_r(filebuf, " \t\n", &saveptr);
     int word_count = 0;
+    int send_errors = 0;
     while (tok) {
         Message part; memset(&part, 0, sizeof(part));
         strcpy(part.command, OP_STREAM_S);
         part.op_code = OP_STREAM;
         part.status_code = SUCCESS;
         strncpy(part.payload, tok, sizeof(part.payload)-1);
-        if (send_message(s, &part) <= 0) break;
+        if (send_message(s, &part) <= 0) {
+            send_errors = 1;
+            break;
+        }
         usleep(100000);
         word_count++;
         tok = strtok_r(NULL, " \t\n", &saveptr);
@@ -702,9 +1017,17 @@ static int ss_handle_stream(const char *fname, int s, const char *username, cons
     end.status_code = SUCCESS;
     send_message(s, &end);
     
-    char log_buf[128];
-    snprintf(log_buf, sizeof(log_buf), "file=%s words=%d result=OK", fname, word_count);
-    log_event_detailed("logs/ss.log", "SS", "STREAM", username, client_ip, client_port, log_buf, 1);
+    if (send_errors) {
+        char log_buf[256];
+        snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s words_sent=%d reason=SOCKET_ERROR", 
+                 fname, username, word_count);
+        log_event_detailed(ss_log_file, "SS", "STREAM", username, client_ip, client_port, log_buf, 1);
+    } else {
+        char log_buf[256];
+        snprintf(log_buf, sizeof(log_buf), "SUCCESS file=%s user=%s words=%d delay=0.1s_per_word", 
+                 fname, username, word_count);
+        log_event_detailed(ss_log_file, "SS", "STREAM", username, client_ip, client_port, log_buf, 1);
+    }
     return SUCCESS;
 }
 
@@ -756,26 +1079,37 @@ static void *handle_client_thread(void *arg) {
     // Single log entry per request
     char log_buf[256];
     snprintf(log_buf, sizeof(log_buf), "op=%s file=%s", req.command, req.filename);
-    log_event_detailed("logs/ss.log", "SS", "REQ", req.username, client_ip, client_port, log_buf, 1);
+    log_event_detailed(ss_log_file, "SS", "REQ", req.username, client_ip, client_port, log_buf, 1);
 
     if (strcmp(req.command, OP_CREATE) == 0) {
         int rc = ss_create_file(req.filename, req.username);
         req.status_code = rc;
         if (rc == SUCCESS) {
             strcpy(req.payload, "SS CREATE OK");
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "SUCCESS file=%s owner=%s path=data/%s", 
+                     req.filename, req.username, req.filename);
+            log_event_detailed(ss_log_file, "SS", "CREATE", req.username, client_ip, client_port, log_buf, 1);
         } else if (rc == ERR_BAD_REQUEST) {
             strcpy(req.payload, "File already exists");
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s reason=FILE_ALREADY_EXISTS", 
+                     req.filename);
+            log_event_detailed(ss_log_file, "SS", "CREATE", req.username, client_ip, client_port, log_buf, 1);
         } else if (rc == ERR_INTERNAL) {
             strcpy(req.payload, "IO error while creating file");
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s reason=IO_ERROR", 
+                     req.filename);
+            log_event_detailed(ss_log_file, "SS", "CREATE", req.username, client_ip, client_port, log_buf, 1);
         } else {
             strcpy(req.payload, "SS CREATE ERR");
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s reason=UNKNOWN_ERROR", 
+                     req.filename);
+            log_event_detailed(ss_log_file, "SS", "CREATE", req.username, client_ip, client_port, log_buf, 1);
         }
         send_message(s, &req);
-        
-        char log_buf[128];
-        snprintf(log_buf, sizeof(log_buf), "file=%s result=%s", 
-                 req.filename, rc == SUCCESS ? "OK" : "FAILED");
-        log_event_detailed("logs/ss.log", "SS", "CREATE", req.username, client_ip, client_port, log_buf, 1);
     } else if (strcmp(req.command, OP_READ_S) == 0 || req.op_code == OP_READ) {
         ss_handle_read(req.filename, s, req.username, client_ip, client_port);
     } else if (strcmp(req.command, OP_STREAM_S) == 0 || req.op_code == OP_STREAM) {
@@ -796,34 +1130,41 @@ static void *handle_client_thread(void *arg) {
             strcpy(resp.payload, "UNDO ERR: No previous version");
             send_message(s, &resp);
             
-            char log_buf[128]; 
-            snprintf(log_buf, sizeof(log_buf), "file=%s result=NO_BACKUP", req.filename);
-            log_event_detailed("logs/ss.log", "SS", "UNDO", req.username, client_ip, client_port, log_buf, 1);
+            char log_buf[256]; 
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s reason=NO_BACKUP_AVAILABLE undo_path=%s", 
+                     req.filename, undo_path);
+            log_event_detailed(ss_log_file, "SS", "UNDO", req.username, client_ip, client_port, log_buf, 1);
         } else {
             FILE *undo = fopen(undo_path, "r");
             FILE *mainf = fopen(main_path, "w");
             
             if (undo && mainf) {
                 char buf[1024]; size_t n;
-                while ((n = fread(buf, 1, sizeof(buf), undo)) > 0) fwrite(buf, 1, n, mainf);
+                size_t total_bytes = 0;
+                while ((n = fread(buf, 1, sizeof(buf), undo)) > 0) {
+                    fwrite(buf, 1, n, mainf);
+                    total_bytes += n;
+                }
                 fclose(undo); fclose(mainf);
                 remove(undo_path);
                 update_meta_counts(req.filename);
                 resp.status_code = SUCCESS; 
                 strcpy(resp.payload, "UNDO OK");
                 
-                char log_buf[128]; 
-                snprintf(log_buf, sizeof(log_buf), "file=%s result=OK", req.filename);
-                log_event_detailed("logs/ss.log", "SS", "UNDO", req.username, client_ip, client_port, log_buf, 1);
+                char log_buf[256]; 
+                snprintf(log_buf, sizeof(log_buf), "SUCCESS file=%s bytes_restored=%zu backup_deleted=YES", 
+                         req.filename, total_bytes);
+                log_event_detailed(ss_log_file, "SS", "UNDO", req.username, client_ip, client_port, log_buf, 1);
             } else {
                 if (undo) fclose(undo); 
                 if (mainf) fclose(mainf);
                 resp.status_code = ERR_BAD_REQUEST; 
                 strcpy(resp.payload, "UNDO ERR: No previous version");
                 
-                char log_buf[128]; 
-                snprintf(log_buf, sizeof(log_buf), "file=%s result=FILE_ERROR", req.filename);
-                log_event_detailed("logs/ss.log", "SS", "UNDO", req.username, client_ip, client_port, log_buf, 1);
+                char log_buf[256]; 
+                snprintf(log_buf, sizeof(log_buf), "FAILED file=%s reason=FILE_IO_ERROR undo_exists=%s main_writable=%s", 
+                         req.filename, undo ? "YES" : "NO", mainf ? "YES" : "NO");
+                log_event_detailed(ss_log_file, "SS", "UNDO", req.username, client_ip, client_port, log_buf, 1);
             }
             send_message(s, &resp);
         }
@@ -835,7 +1176,7 @@ static void *handle_client_thread(void *arg) {
         
         int ok1 = (remove(main_path) == 0);
         int ok2 = (remove(meta_path) == 0);
-        remove(undo_path);
+        int ok3 = (remove(undo_path) == 0);
         
         Message resp; memset(&resp, 0, sizeof(resp));
         strcpy(resp.command, OP_DELETE_S); 
@@ -845,16 +1186,18 @@ static void *handle_client_thread(void *arg) {
             resp.status_code = SUCCESS; 
             strcpy(resp.payload, "DELETE OK");
             
-            char log_buf[128]; 
-            snprintf(log_buf, sizeof(log_buf), "file=%s result=OK", req.filename);
-            log_event_detailed("logs/ss.log", "SS", "DELETE", req.username, client_ip, client_port, log_buf, 1);
+            char log_buf[256]; 
+            snprintf(log_buf, sizeof(log_buf), "SUCCESS file=%s deleted_main=%s deleted_meta=%s deleted_undo=%s", 
+                     req.filename, ok1 ? "YES" : "NO", ok2 ? "YES" : "NO", ok3 ? "YES" : "NO");
+            log_event_detailed(ss_log_file, "SS", "DELETE", req.username, client_ip, client_port, log_buf, 1);
         } else {
             resp.status_code = ERR_FILE_NOT_FOUND; 
-            strcpy(resp.payload, "DELETE ERR: File not found");
+            strcpy(resp.payload, "DELETE ERR: file not found");
             
-            char log_buf[128]; 
-            snprintf(log_buf, sizeof(log_buf), "file=%s result=FAILED reason=not_found", req.filename);
-            log_event_detailed("logs/ss.log", "SS", "DELETE", req.username, client_ip, client_port, log_buf, 1);
+            char log_buf[256]; 
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s reason=FILE_NOT_FOUND main_path=%s", 
+                     req.filename, main_path);
+            log_event_detailed(ss_log_file, "SS", "DELETE", req.username, client_ip, client_port, log_buf, 1);
         }
         send_message(s, &resp);
     } else if (strcmp(req.command, OP_CHECKPOINT_S) == 0) {
@@ -895,6 +1238,60 @@ static void *handle_client_thread(void *arg) {
         else { req.payload[0]='\0'; struct dirent *de; size_t off=0; while((de=readdir(d))){ if(de->d_name[0]=='.') continue; off += snprintf(req.payload+off,sizeof(req.payload)-off,"%s\n", de->d_name); if(off>=sizeof(req.payload)) break; } closedir(d); req.status_code=SUCCESS; send_message(s,&req); }
     } else if (strcmp(req.command, OP_REPL_WRITE_S) == 0) {
         handle_repl_write(s, &req);
+    } else if (strcmp(req.command, OP_MOVE_S) == 0) {
+        // filename = old path, payload = new path
+        char old_main[512], old_meta[512], old_undo[512], old_cp[512];
+        char new_main[512], new_meta[512], new_undo[512], new_cp[512];
+        
+        snprintf(old_main, sizeof(old_main), "data/%s", req.filename);
+        snprintf(old_meta, sizeof(old_meta), "data/%s.meta", req.filename);
+        snprintf(old_undo, sizeof(old_undo), "data/.undo_%s", req.filename);
+        snprintf(old_cp, sizeof(old_cp), "data/.cp_%s", req.filename);
+        
+        snprintf(new_main, sizeof(new_main), "data/%s", req.payload);
+        snprintf(new_meta, sizeof(new_meta), "data/%s.meta", req.payload);
+        snprintf(new_undo, sizeof(new_undo), "data/.undo_%s", req.payload);
+        snprintf(new_cp, sizeof(new_cp), "data/.cp_%s", req.payload);
+        
+        // Ensure destination directories exist
+        char tmp[512];
+        strncpy(tmp, new_main, sizeof(tmp)-1);
+        tmp[sizeof(tmp)-1] = '\0';
+        char *last_slash = strrchr(tmp, '/');
+        if (last_slash) {
+            *last_slash = '\0';
+            // Create parent directories
+            char cmd[1024];
+            snprintf(cmd, sizeof(cmd), "mkdir -p %s", tmp);
+            system(cmd);
+        }
+        
+        // Rename files
+        int ok = 0;
+        if (rename(old_main, new_main) == 0) ok = 1;
+        rename(old_meta, new_meta); // best effort
+        rename(old_undo, new_undo); // best effort
+        rename(old_cp, new_cp); // best effort
+        
+        Message resp; memset(&resp, 0, sizeof(resp));
+        strcpy(resp.command, OP_MOVE_S);
+        
+        if (ok) {
+            resp.status_code = SUCCESS;
+            strcpy(resp.payload, "MOVE OK on SS");
+            
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "file=%s -> %s result=OK", req.filename, req.payload);
+            log_event_detailed(ss_log_file, "SS", "MOVE", req.username, client_ip, client_port, log_buf, 1);
+        } else {
+            resp.status_code = ERR_FILE_NOT_FOUND;
+            strcpy(resp.payload, "MOVE ERR: File not found");
+            
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "file=%s -> %s result=FAILED", req.filename, req.payload);
+            log_event_detailed(ss_log_file, "SS", "MOVE", req.username, client_ip, client_port, log_buf, 1);
+        }
+        send_message(s, &resp);
     } else if (strcmp(req.command, OP_PING_S) == 0) {
         req.status_code = SUCCESS; strcpy(req.payload, "PONG"); send_message(s,&req);
     } else {
@@ -904,6 +1301,65 @@ static void *handle_client_thread(void *arg) {
     }
     close(s);
     return NULL;
+}
+
+// Recursive directory scanner for file registration
+static void scan_dir_recursive(const char *base_path, const char *rel_path, char *list, size_t list_size, int *first) {
+    char full_path[512];
+    if (rel_path && rel_path[0]) {
+        snprintf(full_path, sizeof(full_path), "%s/%s", base_path, rel_path);
+    } else {
+        strncpy(full_path, base_path, sizeof(full_path)-1);
+        full_path[sizeof(full_path)-1] = '\0';
+    }
+    
+    DIR *d = opendir(full_path);
+    if (!d) return;
+    
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        // Skip . and .. and hidden files (starting with .)
+        if (de->d_name[0] == '.') continue;
+        
+        char item_path[512];
+        snprintf(item_path, sizeof(item_path), "%s/%s", full_path, de->d_name);
+        
+        struct stat st;
+        if (stat(item_path, &st) != 0) continue;
+        
+        if (S_ISDIR(st.st_mode)) {
+            // Recurse into subdirectory
+            char new_rel[512];
+            if (rel_path && rel_path[0]) {
+                snprintf(new_rel, sizeof(new_rel), "%s/%s", rel_path, de->d_name);
+            } else {
+                strncpy(new_rel, de->d_name, sizeof(new_rel)-1);
+                new_rel[sizeof(new_rel)-1] = '\0';
+            }
+            scan_dir_recursive(base_path, new_rel, list, list_size, first);
+        } else {
+            // Regular file - skip .meta files
+            if (strstr(de->d_name, ".meta") != NULL) continue;
+            
+            // Build relative path
+            char file_rel[512];
+            if (rel_path && rel_path[0]) {
+                snprintf(file_rel, sizeof(file_rel), "%s/%s", rel_path, de->d_name);
+            } else {
+                strncpy(file_rel, de->d_name, sizeof(file_rel)-1);
+                file_rel[sizeof(file_rel)-1] = '\0';
+            }
+            
+            // Add to list
+            size_t current_len = strlen(list);
+            if (current_len + strlen(file_rel) + 2 < list_size) {
+                if (!(*first)) strcat(list, ";");
+                strncat(list, file_rel, list_size - strlen(list) - 1);
+                *first = 0;
+            }
+        }
+    }
+    closedir(d);
 }
 
 int main(int argc, char **argv) {
@@ -933,22 +1389,20 @@ int main(int argc, char **argv) {
         mkdir("data", 0755);
     }
     
-    // Scan existing files before registering
-    char file_list[2048] = "";
-    DIR *d = opendir("data");
-    if (d) {
-        struct dirent *de;
-        int first = 1;
-        while ((de = readdir(d)) != NULL) {
-            // Skip hidden files and .meta files
-            if (de->d_name[0] != '.' && strstr(de->d_name, ".meta") == NULL) {
-                if (!first) strcat(file_list, ",");
-                strncat(file_list, de->d_name, sizeof(file_list) - strlen(file_list) - 1);
-                first = 0;
-            }
-        }
-        closedir(d);
+    // Ensure logs directory exists
+    if (stat("logs", &st) == -1) {
+        mkdir("logs", 0755);
     }
+    
+    // Create unique log file based on client port (will be updated after registration)
+    snprintf(ss_log_file, sizeof(ss_log_file), "logs/ss_port%d.log", client_port);
+    FILE *log_init = fopen(ss_log_file, "w");
+    if (log_init) fclose(log_init);
+    
+    // Scan existing files recursively before registering
+    char file_list[2048] = "";
+    int first = 1;
+    scan_dir_recursive("data", "", file_list, sizeof(file_list), &first);
     
     printf("Connecting to Name Server at %s:%d...\n", nm_ip, nm_port);
     // Store NM connection info for later notifications
@@ -989,6 +1443,23 @@ int main(int argc, char **argv) {
         // Update SS name and global ID based on assigned ss_id
         ss_id_global = assigned_ss_id;
         snprintf(ss_name, sizeof(ss_name), "SS%d", assigned_ss_id);
+        
+        // Save old log file name before updating
+        char old_log_file[128];
+        strncpy(old_log_file, ss_log_file, sizeof(old_log_file));
+        
+        // Update log file to use SS ID instead of port
+        snprintf(ss_log_file, sizeof(ss_log_file), "logs/ss%d.log", assigned_ss_id);
+        
+        // Create/clear the new log file
+        FILE *log_update = fopen(ss_log_file, "w");
+        if (log_update) fclose(log_update);
+        
+        // Delete the temporary port-based log file if it's different
+        if (strcmp(old_log_file, ss_log_file) != 0) {
+            remove(old_log_file);
+        }
+        
         printf("✓ Registration successful: %s (assigned name: %s)\n", msg.payload, ss_name);
     } else {
         printf("✗ Registration failed: %s\n", msg.payload);
@@ -996,7 +1467,7 @@ int main(int argc, char **argv) {
         exit(1);
     }
     
-    log_event("logs/ss.log", "SS", "Registered successfully with NM");
+    log_event(ss_log_file, "SS", "Registered successfully with NM");
     close(nmsock);
 
     printf("Starting server on port %d...\n", client_port);

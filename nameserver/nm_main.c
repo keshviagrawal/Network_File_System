@@ -29,6 +29,8 @@ void log_event_detailed(const char *filename, const char *component,
 // From nm_registry.c
 void nm_load_persisted_files();
 void nm_get_cache_stats(unsigned long *hits, unsigned long *misses, int *size);
+int nm_find_file_index(const char *fname);
+void nm_update_file_ss(int file_index, int ss_id);
 int nm_register_ss(const char *name, const char *ip, int client_port);
 int nm_choose_ss();
 void nm_remove_client(const char *user);
@@ -41,6 +43,7 @@ int nm_resolve_for_read(char *filename, char *username, char *ss_ip_out, int *ss
 int nm_resolve_for_write(char *filename, char *username, char *ss_ip_out, int *ss_port_out);
 int nm_resolve_for_undo(char *filename, char *username, char *ss_ip_out, int *ss_port_out);
 int nm_track_client(const char *user, const char *ip, int port);  // Returns 1 if new client, 0 if existing
+int nm_is_username_active(const char *user);  // Check if username is currently taken by an active client
 int nm_list_users(char *out, size_t outlen);
 int nm_check_read(const char *fname, const char *user);
 int nm_check_write(const char *fname, const char *user);
@@ -149,7 +152,13 @@ static void handle_register_ss(int sock, Message *msg, struct sockaddr_in *addr)
                 int create_result = nm_create_file(file_tok, owner, ss_id, err, sizeof(err));
                 if (create_result == SUCCESS) {
                     files_registered++;
-                    // Don't print individual files to avoid accessing them unnecessarily
+                } else if (strstr(err, "file exists")) {
+                    // File already exists in registry (loaded from disk), update its ss_id
+                    int idx = nm_find_file_index(file_tok);
+                    if (idx >= 0) {
+                        nm_update_file_ss(idx, ss_id);
+                        files_registered++;
+                    }
                 }
             }
             file_tok = strtok(NULL, ";");
@@ -288,10 +297,11 @@ static void handle_client_req(int sock, Message *msg) {
                 int replica_id = nm_get_replica_ss_id(msg->filename);
                 if (replica_id >= 0) {
                     snprintf(msg->payload, sizeof(msg->payload), 
-                             "CREATE OK on SS %d (replica: SS %d)", ss_id, replica_id);
+                             "✓ File created successfully!\n  Primary Storage: SS%d\n  Replica Storage: SS%d", 
+                             ss_id, replica_id);
                 } else {
                     snprintf(msg->payload, sizeof(msg->payload), 
-                             "CREATE OK on SS %d (no replica)", ss_id);
+                             "✓ File created on SS%d (no replica available)", ss_id);
                 }
                 // Trigger initial replication for empty file to ensure replica sidecar/meta exists
                 replicate_file_async(msg->filename);
@@ -307,8 +317,17 @@ static void handle_client_req(int sock, Message *msg) {
         
         // Single result log
         char log_buf[256];
-        snprintf(log_buf, sizeof(log_buf), "file=%s ss=%d result=%s", 
-                 msg->filename, ss_id, msg->status_code == SUCCESS ? "OK" : "FAILED");
+        int replica_id = nm_get_replica_ss_id(msg->filename);
+        if (msg->status_code == SUCCESS && replica_id >= 0) {
+            snprintf(log_buf, sizeof(log_buf), "SUCCESS file=%s primary_ss=%d replica_ss=%d", 
+                     msg->filename, ss_id, replica_id);
+        } else if (msg->status_code == SUCCESS) {
+            snprintf(log_buf, sizeof(log_buf), "SUCCESS file=%s primary_ss=%d no_replica=true", 
+                     msg->filename, ss_id);
+        } else {
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s ss=%d", 
+                     msg->filename, ss_id);
+        }
         log_event_detailed("logs/nm.log", "NM", "CREATE", msg->username, client_ip, client_port, log_buf, 1);
     } else if (strcmp(msg->command, OP_VIEW) == 0) {
         int flags = 0;
@@ -343,18 +362,30 @@ static void handle_client_req(int sock, Message *msg) {
         
         if (rc == SUCCESS) {
             snprintf(msg->payload, sizeof(msg->payload), "%s:%d", ip, port);
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "SUCCESS file=%s user=%s resolved_to=%s:%d", 
+                     msg->filename, msg->username, ip, port);
+            log_event_detailed("logs/nm.log", "NM", "RESOLVE_READ", msg->username, client_ip, client_port, log_buf, 1);
         } else if (rc == ERR_FILE_NOT_FOUND) {
             strcpy(msg->payload, "File not found");
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=FILE_NOT_FOUND", 
+                     msg->filename, msg->username);
+            log_event_detailed("logs/nm.log", "NM", "RESOLVE_READ", msg->username, client_ip, client_port, log_buf, 1);
         } else if (rc == ERR_PERMISSION_DENIED) {
             strcpy(msg->payload, "Access denied");
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=ACCESS_DENIED", 
+                     msg->filename, msg->username);
+            log_event_detailed("logs/nm.log", "NM", "RESOLVE_READ", msg->username, client_ip, client_port, log_buf, 1);
         } else {
             strcpy(msg->payload, "Resolve error");
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=INTERNAL_ERROR", 
+                     msg->filename, msg->username);
+            log_event_detailed("logs/nm.log", "NM", "RESOLVE_READ", msg->username, client_ip, client_port, log_buf, 1);
         }
         send_message(sock, msg);
-        
-        char log_buf[128];
-        snprintf(log_buf, sizeof(log_buf), "file=%s result=%s", msg->filename, rc == SUCCESS ? "OK" : "FAILED");
-        log_event_detailed("logs/nm.log", "NM", "RESOLVE_READ", msg->username, client_ip, client_port, log_buf, 1);
         
     } else if (strcmp(msg->command, OP_RESOLVE_STREAM_S) == 0 || msg->op_code == OP_RESOLVE_STREAM) {
         char ip[32]; int port = 0;
@@ -364,18 +395,30 @@ static void handle_client_req(int sock, Message *msg) {
         
         if (rc == SUCCESS) {
             snprintf(msg->payload, sizeof(msg->payload), "%s:%d", ip, port);
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "SUCCESS file=%s user=%s resolved_to=%s:%d", 
+                     msg->filename, msg->username, ip, port);
+            log_event_detailed("logs/nm.log", "NM", "RESOLVE_STREAM", msg->username, client_ip, client_port, log_buf, 1);
         } else if (rc == ERR_FILE_NOT_FOUND) {
             strcpy(msg->payload, "File not found");
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=FILE_NOT_FOUND", 
+                     msg->filename, msg->username);
+            log_event_detailed("logs/nm.log", "NM", "RESOLVE_STREAM", msg->username, client_ip, client_port, log_buf, 1);
         } else if (rc == ERR_PERMISSION_DENIED) {
             strcpy(msg->payload, "Access denied");
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=ACCESS_DENIED", 
+                     msg->filename, msg->username);
+            log_event_detailed("logs/nm.log", "NM", "RESOLVE_STREAM", msg->username, client_ip, client_port, log_buf, 1);
         } else {
             strcpy(msg->payload, "Resolve error");
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=INTERNAL_ERROR", 
+                     msg->filename, msg->username);
+            log_event_detailed("logs/nm.log", "NM", "RESOLVE_STREAM", msg->username, client_ip, client_port, log_buf, 1);
         }
         send_message(sock, msg);
-        
-        char log_buf[128];
-        snprintf(log_buf, sizeof(log_buf), "file=%s result=%s", msg->filename, rc == SUCCESS ? "OK" : "FAILED");
-        log_event_detailed("logs/nm.log", "NM", "RESOLVE_STREAM", msg->username, client_ip, client_port, log_buf, 1);
     } else if (strcmp(msg->command, OP_WRITE_REQUEST_S) == 0 || msg->op_code == OP_WRITE_REQUEST) {
         char ip[32]; int port = 0;
         int rc = nm_check_write(msg->filename, msg->username);
@@ -393,28 +436,29 @@ static void handle_client_req(int sock, Message *msg) {
             int ssid = nm_get_ss_id(msg->filename);
             
             char log_buf[256];
-            snprintf(log_buf, sizeof(log_buf), "file=%s ss=%d time=%.3fms", msg->filename, ssid, lookup_ms);
-            log_event_detailed("logs/nm.log", "NM", "LOOKUP", msg->username, client_ip, client_port, log_buf, 1);
-            
-            snprintf(log_buf, sizeof(log_buf), "id=%s ss=%d op=WRITE", msg->req_id, ssid);
-            log_event_detailed("logs/nm.log", "NM", "FORWARD", msg->username, client_ip, client_port, log_buf, 1);
+            snprintf(log_buf, sizeof(log_buf), "SUCCESS file=%s user=%s ss=%d resolved_to=%s:%d lookup_time=%.3fms", 
+                     msg->filename, msg->username, ssid, ip, port, lookup_ms);
+            log_event_detailed("logs/nm.log", "NM", "RESOLVE_WRITE", msg->username, client_ip, client_port, log_buf, 1);
             
             add_pending_req(msg->req_id, client_ip, client_port, msg->username, msg->filename, ssid);
         } else if (rc == ERR_FILE_NOT_FOUND) {
             strcpy(msg->payload, "File not found");
-            char log_buf[128]; 
-            snprintf(log_buf, sizeof(log_buf), "file=%s result=NOT_FOUND", msg->filename);
-            log_event_detailed("logs/nm.log", "NM", "LOOKUP", msg->username, client_ip, client_port, log_buf, 1);
+            char log_buf[256]; 
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=FILE_NOT_FOUND", 
+                     msg->filename, msg->username);
+            log_event_detailed("logs/nm.log", "NM", "RESOLVE_WRITE", msg->username, client_ip, client_port, log_buf, 1);
         } else if (rc == ERR_PERMISSION_DENIED) {
             strcpy(msg->payload, "Access denied");
-            char log_buf[128]; 
-            snprintf(log_buf, sizeof(log_buf), "file=%s result=DENIED", msg->filename);
-            log_event_detailed("logs/nm.log", "NM", "LOOKUP", msg->username, client_ip, client_port, log_buf, 1);
+            char log_buf[256]; 
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=ACCESS_DENIED", 
+                     msg->filename, msg->username);
+            log_event_detailed("logs/nm.log", "NM", "RESOLVE_WRITE", msg->username, client_ip, client_port, log_buf, 1);
         } else {
             strcpy(msg->payload, "Write resolve error");
-            char log_buf[128]; 
-            snprintf(log_buf, sizeof(log_buf), "file=%s result=ERROR", msg->filename);
-            log_event_detailed("logs/nm.log", "NM", "LOOKUP", msg->username, client_ip, client_port, log_buf, 1);
+            char log_buf[256]; 
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=INTERNAL_ERROR", 
+                     msg->filename, msg->username);
+            log_event_detailed("logs/nm.log", "NM", "RESOLVE_WRITE", msg->username, client_ip, client_port, log_buf, 1);
         }
         send_message(sock, msg);
     } else if (strcmp(msg->command, OP_WRITE_NOTIFY_S) == 0 || msg->op_code == OP_WRITE_NOTIFY) {
@@ -462,15 +506,33 @@ static void handle_client_req(int sock, Message *msg) {
         }
         msg->status_code = SUCCESS; strcpy(msg->payload, "NOTED"); send_message(sock, msg);
     } else if (strcmp(msg->command, OP_UNDO_S) == 0 || msg->op_code == OP_UNDO) {
-        char ip[32]; int port = 0;
         // UNDO requires write permission as per TA clarification
-        int rc = nm_resolve_for_write(msg->filename, msg->username, ip, &port);
+        int rc = nm_check_write(msg->filename, msg->username);
         if (rc != SUCCESS) {
             msg->status_code = rc;
             if (rc == ERR_FILE_NOT_FOUND) strcpy(msg->payload, "File not found");
-            else if (rc == ERR_PERMISSION_DENIED) strcpy(msg->payload, "Access denied");
-            else strcpy(msg->payload, "Resolve error");
+            else if (rc == ERR_PERMISSION_DENIED) strcpy(msg->payload, "Access denied: Write permission required for UNDO");
+            else strcpy(msg->payload, "Access check error");
             send_message(sock, msg);
+            
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=%s", 
+                     msg->filename, msg->username, rc == ERR_PERMISSION_DENIED ? "NO_WRITE_ACCESS" : "FILE_NOT_FOUND");
+            log_event_detailed("logs/nm.log", "NM", "UNDO", msg->username, client_ip, client_port, log_buf, 1);
+            return;
+        }
+        
+        char ip[32]; int port = 0;
+        rc = nm_resolve_for_write(msg->filename, msg->username, ip, &port);
+        if (rc != SUCCESS) {
+            msg->status_code = rc;
+            strcpy(msg->payload, "Resolve error");
+            send_message(sock, msg);
+            
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=RESOLVE_ERROR", 
+                     msg->filename, msg->username);
+            log_event_detailed("logs/nm.log", "NM", "UNDO", msg->username, client_ip, client_port, log_buf, 1);
             return;
         }
         
@@ -551,14 +613,20 @@ static void handle_client_req(int sock, Message *msg) {
         int rc = nm_is_owner(msg->filename, msg->username);
         if (rc != SUCCESS) {
             msg->status_code = rc;
-            if (rc == ERR_FILE_NOT_FOUND) strcpy(msg->payload, "File not found.");
-            else strcpy(msg->payload, "Access denied.");
+            if (rc == ERR_FILE_NOT_FOUND) {
+                strcpy(msg->payload, "File not found.");
+                char log_buf[256];
+                snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=FILE_NOT_FOUND", 
+                         msg->filename, msg->username);
+                log_event_detailed("logs/nm.log", "NM", "DELETE", msg->username, client_ip, client_port, log_buf, 1);
+            } else {
+                strcpy(msg->payload, "Access denied.");
+                char log_buf[256];
+                snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=NOT_OWNER", 
+                         msg->filename, msg->username);
+                log_event_detailed("logs/nm.log", "NM", "DELETE", msg->username, client_ip, client_port, log_buf, 1);
+            }
             send_message(sock, msg);
-            
-            char log_buf[128];
-            snprintf(log_buf, sizeof(log_buf), "file=%s result=FAILED reason=%s", 
-                     msg->filename, rc == ERR_FILE_NOT_FOUND ? "not_found" : "access_denied");
-            log_event_detailed("logs/nm.log", "NM", "DELETE", msg->username, client_ip, client_port, log_buf, 1);
             return;
         }
         
@@ -567,12 +635,14 @@ static void handle_client_req(int sock, Message *msg) {
             msg->status_code=rc; strcpy(msg->payload, "Resolve error"); 
             send_message(sock, msg);
             
-            char log_buf[128];
-            snprintf(log_buf, sizeof(log_buf), "file=%s result=FAILED reason=resolve_error", msg->filename);
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s reason=RESOLVE_ERROR", 
+                     msg->filename, msg->username);
             log_event_detailed("logs/nm.log", "NM", "DELETE", msg->username, client_ip, client_port, log_buf, 1);
             return; 
         }
         
+        int ssid = nm_get_ss_id(msg->filename);
         int ssock = connect_to_server(ip, port); 
         Message fwd; memset(&fwd,0,sizeof(fwd)); 
         strcpy(fwd.command, OP_DELETE_S); 
@@ -583,8 +653,9 @@ static void handle_client_req(int sock, Message *msg) {
             msg->status_code = ERR_INTERNAL; strcpy(msg->payload, "DELETE ERR: SS unavailable");
             send_message(sock, msg);
             
-            char log_buf[128];
-            snprintf(log_buf, sizeof(log_buf), "file=%s result=FAILED reason=SS_unavailable", msg->filename);
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s ss=%d reason=SS_UNAVAILABLE", 
+                     msg->filename, msg->username, ssid);
             log_event_detailed("logs/nm.log", "NM", "DELETE", msg->username, client_ip, client_port, log_buf, 1);
             return;
         }
@@ -605,6 +676,11 @@ static void handle_client_req(int sock, Message *msg) {
                         send_message(rep_sock, &rep_del);
                         receive_message(rep_sock, &rep_del); // ignore result
                         close(rep_sock);
+                        
+                        char log_buf[256];
+                        snprintf(log_buf, sizeof(log_buf), "file=%s replica_ss=%d deleted_from_replica=%s", 
+                                 msg->filename, replica_id, rep_del.status_code == SUCCESS ? "YES" : "NO");
+                        log_event_detailed("logs/nm.log", "NM", "DELETE_REPLICA", msg->username, client_ip, client_port, log_buf, 1);
                     }
                 }
             }
@@ -612,16 +688,21 @@ static void handle_client_req(int sock, Message *msg) {
             nm_delete_entry(msg->filename); 
             msg->status_code=SUCCESS; 
             strcpy(msg->payload, "DELETE OK"); 
+            
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "SUCCESS file=%s user=%s primary_ss=%d replica_ss=%d", 
+                     msg->filename, msg->username, ssid, replica_id);
+            log_event_detailed("logs/nm.log", "NM", "DELETE", msg->username, client_ip, client_port, log_buf, 1);
         } else { 
             msg->status_code=fwd.status_code; 
             strncpy(msg->payload, fwd.payload, sizeof(msg->payload)-1); 
+            
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "FAILED file=%s user=%s ss=%d reason=SS_DELETE_FAILED", 
+                     msg->filename, msg->username, ssid);
+            log_event_detailed("logs/nm.log", "NM", "DELETE", msg->username, client_ip, client_port, log_buf, 1);
         }
         send_message(sock, msg);
-        
-        char log_buf[128];
-        snprintf(log_buf, sizeof(log_buf), "file=%s result=%s", 
-                 msg->filename, fwd.status_code == SUCCESS ? "OK" : "FAILED");
-        log_event_detailed("logs/nm.log", "NM", "DELETE", msg->username, client_ip, client_port, log_buf, 1);
         
     } else if (strcmp(msg->command, OP_EXEC_S) == 0 || msg->op_code == OP_EXEC) {
         if (nm_check_read(msg->filename, msg->username) != SUCCESS) {
@@ -685,22 +766,81 @@ static void handle_client_req(int sock, Message *msg) {
         if (!msg->filename[0]) { msg->status_code=ERR_BAD_REQUEST; strcpy(msg->payload, "Folder name required"); send_message(sock,msg); return; }
         char path[512]; snprintf(path, sizeof(path), "data/%s", msg->filename);
         int rc = mkdir(path, 0755);
-        if (rc==0) { msg->status_code=SUCCESS; strcpy(msg->payload, "FOLDER OK"); }
+        if (rc==0) { 
+            msg->status_code=SUCCESS; 
+            snprintf(msg->payload, sizeof(msg->payload), 
+                     "✓ Folder '%s' created on Name Server\n  (Note: Folders are not replicated, only files are)", 
+                     msg->filename);
+        }
         else { msg->status_code=ERR_BAD_REQUEST; strcpy(msg->payload, "Folder exists or invalid"); }
         send_message(sock, msg);
-        char log_buf[128]; snprintf(log_buf,sizeof(log_buf), "folder=%s result=%s", msg->filename, msg->status_code==SUCCESS?"OK":"FAILED");
+        char log_buf[256]; 
+        snprintf(log_buf,sizeof(log_buf), "folder=%s location=NM_LOCAL result=%s note=folders_not_replicated", 
+                 msg->filename, msg->status_code==SUCCESS?"SUCCESS":"FAILED");
         log_event_detailed("logs/nm.log","NM","CREATEFOLDER", msg->username, client_ip, client_port, log_buf,1);
     } else if (strcmp(msg->command, OP_MOVE_S) == 0) {
         // payload holds target folder; filename holds file name (relative)
         if (!msg->filename[0] || !msg->payload[0]) { msg->status_code=ERR_BAD_REQUEST; strcpy(msg->payload, "Args missing"); send_message(sock,msg); return; }
         // Check ownership or write access
         int ow = nm_check_write(msg->filename, msg->username); if (ow!=SUCCESS) { msg->status_code=ow; strcpy(msg->payload, "Access denied"); send_message(sock,msg); return; }
+        
+        // Get the storage server(s) hosting this file before the move
+        int ss_id = nm_get_ss_id(msg->filename);
+        int replica_id = nm_get_replica_ss_id(msg->filename);
+        char old_filename[256];
+        strncpy(old_filename, msg->filename, sizeof(old_filename)-1);
+        old_filename[sizeof(old_filename)-1] = '\0';
+        
+        // Construct the new filename
+        char new_filename[512];
+        snprintf(new_filename, sizeof(new_filename), "%s/%s", msg->payload, msg->filename);
+        
+        // Perform the move in nameserver registry
         char errbuf[128];
         int rc = nm_move_file(msg->filename, msg->payload, errbuf, sizeof(errbuf));
+        
+        if (rc == SUCCESS) {
+            // Notify the primary storage server to move the file
+            if (ss_id >= 0) {
+                char ip[32]; int port = 0;
+                if (nm_get_ss_ip_port(ss_id, ip, sizeof(ip), &port) == 0) {
+                    int ssock = try_connect_nofatal(ip, port);
+                    if (ssock >= 0) {
+                        Message mv; memset(&mv, 0, sizeof(mv));
+                        strcpy(mv.command, OP_MOVE_S);
+                        strncpy(mv.filename, old_filename, sizeof(mv.filename)-1);
+                        strncpy(mv.payload, new_filename, sizeof(mv.payload)-1);
+                        strncpy(mv.username, msg->username, sizeof(mv.username)-1);
+                        send_message(ssock, &mv);
+                        receive_message(ssock, &mv); // Get response but don't fail if SS fails
+                        close(ssock);
+                    }
+                }
+            }
+            
+            // Notify the replica storage server to move the file
+            if (replica_id >= 0 && nm_server_is_alive(replica_id)) {
+                char rep_ip[32]; int rep_port = 0;
+                if (nm_get_ss_ip_port(replica_id, rep_ip, sizeof(rep_ip), &rep_port) == 0) {
+                    int rep_sock = try_connect_nofatal(rep_ip, rep_port);
+                    if (rep_sock >= 0) {
+                        Message mv; memset(&mv, 0, sizeof(mv));
+                        strcpy(mv.command, OP_MOVE_S);
+                        strncpy(mv.filename, old_filename, sizeof(mv.filename)-1);
+                        strncpy(mv.payload, new_filename, sizeof(mv.payload)-1);
+                        strncpy(mv.username, msg->username, sizeof(mv.username)-1);
+                        send_message(rep_sock, &mv);
+                        receive_message(rep_sock, &mv); // Get response but don't fail if replica fails
+                        close(rep_sock);
+                    }
+                }
+            }
+        }
+        
         msg->status_code = rc;
         if (rc==SUCCESS) strcpy(msg->payload, "MOVE OK"); else snprintf(msg->payload,sizeof(msg->payload), "Move failed: %s", errbuf);
         send_message(sock,msg);
-        char log_buf[160]; snprintf(log_buf,sizeof(log_buf),"file=%s folder=%s result=%s", msg->filename, msg->payload, msg->status_code==SUCCESS?"OK":"FAILED");
+        char log_buf[160]; snprintf(log_buf,sizeof(log_buf),"file=%s folder=%s result=%s", old_filename, msg->payload, msg->status_code==SUCCESS?"OK":"FAILED");
         log_event_detailed("logs/nm.log","NM","MOVE", msg->username, client_ip, client_port, log_buf,1);
     } else if (strcmp(msg->command, OP_VIEWFOLDER_S) == 0) {
         char folder[256]; strncpy(folder, msg->filename, sizeof(folder)-1); folder[sizeof(folder)-1]='\0';
@@ -965,8 +1105,8 @@ int main(int argc, char **argv) {
     
     printf("Name Server starting on port %d...\n", nm_port);
 
-    // Don't load files from disk - NM should learn about files from SS registrations
-    // nm_load_persisted_files();  // REMOVED: NM should get file list from SS
+    // Load persisted files from metadata to preserve last_access times
+    nm_load_persisted_files();
 
     int server_fd = create_server_socket(nm_port);
     log_event("logs/nm.log", "NM", "Server started");
@@ -1012,25 +1152,35 @@ int main(int argc, char **argv) {
         } else if (strcmp(msg.command, "AUTH") == 0 || strcmp(msg.command, "CONNECT") == 0) {
             // Handle initial client authentication/connection
             
-            // First remove any existing entry for this user (in case of reconnect)
-            nm_remove_client(msg.username);
-            
-            // Handle initial client authentication/connection
-            // First remove any previous entry for this user
-            nm_remove_client(msg.username);
-            
-            // Track the initial connection
-            nm_track_client(msg.username, client_ip, client_port);
-            
-            char connect_msg[256];
-            snprintf(connect_msg, sizeof(connect_msg), "New client connected: %s@%s:%d",
-                    msg.username, client_ip, client_port);
-            log_event_detailed("logs/nm.log", "NM", "CONNECTION", msg.username,
-                             client_ip, client_port, connect_msg, 1);
-            
-            msg.status_code = SUCCESS;
-            strcpy(msg.payload, "Connected");
-            send_message(sock, &msg);
+            // Check if username is already taken by an active client
+            if (nm_is_username_active(msg.username)) {
+                msg.status_code = ERR_PERMISSION_DENIED;
+                snprintf(msg.payload, sizeof(msg.payload), 
+                         "Username '%s' is already in use by an active client. Please choose a different username.", 
+                         msg.username);
+                send_message(sock, &msg);
+                
+                char log_buf[256];
+                snprintf(log_buf, sizeof(log_buf), "REJECTED: Username '%s' already active", msg.username);
+                log_event_detailed("logs/nm.log", "NM", "AUTH_FAILED", msg.username,
+                                 client_ip, client_port, log_buf, 1);
+            } else {
+                // First remove any existing entry for this user (in case of reconnect after logout)
+                nm_remove_client(msg.username);
+                
+                // Track the initial connection
+                nm_track_client(msg.username, client_ip, client_port);
+                
+                char connect_msg[256];
+                snprintf(connect_msg, sizeof(connect_msg), "New client connected: %s@%s:%d",
+                        msg.username, client_ip, client_port);
+                log_event_detailed("logs/nm.log", "NM", "CONNECTION", msg.username,
+                                 client_ip, client_port, connect_msg, 1);
+                
+                msg.status_code = SUCCESS;
+                strcpy(msg.payload, "Connected");
+                send_message(sock, &msg);
+            }
         } else {
             handle_client_req(sock, &msg);
         }

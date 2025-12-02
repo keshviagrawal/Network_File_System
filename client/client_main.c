@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <sys/select.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include "../include/protocol.h"
 #include "../include/constants.h"
@@ -17,6 +19,10 @@ void log_event(const char *filename, const char *component, const char *event);
 static char username[32];
 static char nm_ip[64] = "127.0.0.1";
 static int nm_port_cfg = NM_PORT;
+
+// Global variable for this client's unique log file
+static char client_log_file[128] = "logs/client.log";
+static int client_instance_id = 0;
 
 static void send_logout() {
     Message logout_msg;
@@ -65,7 +71,7 @@ static void do_create(const char *fname) {
     strncpy(m.username, username, sizeof(m.username)-1);
     send_req(&m);
     printf("%s\n", m.payload);
-    log_event("logs/client.log", "CLIENT", "CREATE sent");
+    log_event(client_log_file, "CLIENT", "CREATE sent");
 }
 
 static void do_view(const char *flags) {
@@ -75,7 +81,7 @@ static void do_view(const char *flags) {
     if (flags) strncpy(m.payload, flags, sizeof(m.payload)-1);
     send_req(&m);
     printf("%s", m.payload);
-    log_event("logs/client.log", "CLIENT", "VIEW sent");
+    log_event(client_log_file, "CLIENT", "VIEW sent");
 }
 
 static void do_info(const char *fname) {
@@ -86,7 +92,7 @@ static void do_info(const char *fname) {
     send_req(&m);
     if (m.status_code == SUCCESS) printf("%s", m.payload);
     else printf("ERROR %d: %s\n", m.status_code, m.payload);
-    log_event("logs/client.log", "CLIENT", "INFO sent");
+    log_event(client_log_file, "CLIENT", "INFO sent");
 }
 
 static void usage(const char *p) {
@@ -98,7 +104,14 @@ static void handle_command(int argc, char **argv, int argi);
 
 int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
-    // Optional: ./bin/client [NM_IP NM_PORT]
+    
+    // Create logs directory if it doesn't exist
+    struct stat st = {0};
+    if (stat("logs", &st) == -1) {
+        mkdir("logs", 0755);
+    }
+    
+    // Optional: ./bin/client [NM_IP NM_PORT [CLIENT_ID]]
     if (argc >= 3) {
         strncpy(nm_ip, argv[1], sizeof(nm_ip)-1);
         nm_ip[sizeof(nm_ip)-1] = '\0';
@@ -108,6 +121,20 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+    
+    // Optional client ID for unique log file
+    if (argc >= 4) {
+        client_instance_id = atoi(argv[3]);
+    } else {
+        // Use process ID as unique identifier
+        client_instance_id = getpid() % 10000;
+    }
+    
+    // Create unique log file for this client
+    snprintf(client_log_file, sizeof(client_log_file), "logs/client%d.log", client_instance_id);
+    FILE *log_init = fopen(client_log_file, "w");
+    if (log_init) fclose(log_init);
+    
     // Always prompt for username
     printf("Enter username: ");
     fflush(stdout);
@@ -244,7 +271,7 @@ static void handle_command(int argc, char **argv, int argi) {
         }
         if (any_ok) printf("\n--- End file ---\n");
         close(ssock);
-        log_event("logs/client.log", "CLIENT", "READ displayed");
+        log_event(client_log_file, "CLIENT", "READ displayed");
     } else if (strcmp(cmd, "STREAM") == 0 && argc >= argi+2) {
         Message m; memset(&m, 0, sizeof(m));
         m.op_code = OP_RESOLVE_STREAM; strcpy(m.command, OP_RESOLVE_STREAM_S);
@@ -272,7 +299,7 @@ static void handle_command(int argc, char **argv, int argi) {
             }
         }
         close(ssock);
-        log_event("logs/client.log", "CLIENT", "STREAM displayed");
+        log_event(client_log_file, "CLIENT", "STREAM displayed");
     } else if (strcmp(cmd, "WRITE") == 0 && argc >= argi+3) {
         const char *fname = argv[argi+1]; int sidx = atoi(argv[argi+2]);
     // Resolve write via NM to get SS endpoint
@@ -329,7 +356,7 @@ static void handle_command(int argc, char **argv, int argi) {
         
         if (error_occurred) {
             close(ssock);
-            log_event("logs/client.log", "CLIENT", "WRITE error");
+            log_event(client_log_file, "CLIENT", "WRITE error");
             return;
         }
         
@@ -346,7 +373,7 @@ static void handle_command(int argc, char **argv, int argi) {
             printf("Write failed or disconnected.\n");
         }
         close(ssock);
-        log_event("logs/client.log", "CLIENT", "WRITE complete");
+        log_event(client_log_file, "CLIENT", "WRITE complete");
     } else if (strcmp(cmd, "UNDO") == 0 && argc >= argi+2) {
         Message m; memset(&m, 0, sizeof(m));
         strcpy(m.command, OP_UNDO_S);
@@ -396,7 +423,7 @@ static void handle_command(int argc, char **argv, int argi) {
             if (r.payload[0]) printf("%s\n", r.payload);
         }
         close(sock);
-        log_event("logs/client.log", "CLIENT", "EXEC displayed");
+        log_event(client_log_file, "CLIENT", "EXEC displayed");
     } else if (strcmp(cmd, "CREATEFOLDER") == 0 && argc >= argi+2) {
         Message m; memset(&m,0,sizeof(m)); strcpy(m.command, OP_CREATEFOLDER_S);
         strncpy(m.username, username, sizeof(m.username)-1);

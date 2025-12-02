@@ -1,4 +1,5 @@
 // Minimal in-memory registry for Part 2: CREATE/VIEW/INFO
+#define _XOPEN_SOURCE
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -239,6 +240,7 @@ static void nm_scan_data_dir(const char *root, const char *relprefix) {
 			FILE *mf = fopen(fullpath, "r");
 			if (!mf) continue;
 			char owner[64] = "unknown";
+			char last_access_str[64] = "";
 			int words = 0, chars = 0;
 			char line[256];
 			while (fgets(line, sizeof(line), mf)) {
@@ -250,15 +252,38 @@ static void nm_scan_data_dir(const char *root, const char *relprefix) {
 					words = atoi(line + 6);
 				} else if (strncmp(line, "chars=", 6) == 0) {
 					chars = atoi(line + 6);
+				} else if (strncmp(line, "last_access=", 12) == 0) {
+					strncpy(last_access_str, line + 12, sizeof(last_access_str) - 1);
+					size_t L = strlen(last_access_str);
+					if (L > 0 && (last_access_str[L-1] == '\n' || last_access_str[L-1] == '\r')) last_access_str[L-1] = '\0';
 				}
 			}
 			fclose(mf);
 
 			// Get timestamps from the data file if present
 			char fpath[512]; snprintf(fpath, sizeof(fpath), "%s/%s", root, filename);
-			time_t created = 0, modified = 0; struct stat fst;
-			if (stat(fpath, &fst) == 0) { created = fst.st_ctime; modified = fst.st_mtime; }
-			else { time(&created); modified = created; }
+			time_t created = 0, modified = 0, last_access = 0;
+			struct stat fst;
+			if (stat(fpath, &fst) == 0) { 
+				created = fst.st_ctime; 
+				modified = fst.st_mtime; 
+			}
+			else { 
+				time(&created); 
+				modified = created; 
+			}
+			
+			// Parse last_access from metadata if available
+			if (last_access_str[0]) {
+				struct tm tm_acc = {0};
+				if (strptime(last_access_str, "%Y-%m-%d %H:%M:%S", &tm_acc)) {
+					last_access = mktime(&tm_acc);
+				} else {
+					last_access = modified; // fallback
+				}
+			} else {
+				last_access = modified; // fallback if not in metadata
+			}
 
 			if (file_count < MAX_FILES) {
 				FileEntry *e = &files[file_count];
@@ -270,7 +295,7 @@ static void nm_scan_data_dir(const char *root, const char *relprefix) {
 				e->chars = chars;
 				e->created = created;
 				e->modified = modified;
-				e->last_access = modified;
+				e->last_access = last_access;
 				strncpy(e->last_access_by, owner, sizeof(e->last_access_by)-1);
 				hash_add_file(filename, file_count);
 				file_count++;
@@ -286,6 +311,16 @@ void nm_load_persisted_files() {
 	nm_scan_data_dir("data", "");
 	int loaded = file_count - before;
 	printf("Loaded %d persisted files from data/ directory\n", loaded);
+}
+
+// Check if username is currently taken by an active client
+int nm_is_username_active(const char *user) {
+    for (int i = 0; i < client_count; i++) {
+        if (strcmp(clients[i].username, user) == 0) {
+            return 1; // Username is active
+        }
+    }
+    return 0; // Username not active
 }
 
 int nm_track_client(const char *user, const char *ip, int port) {
@@ -399,48 +434,168 @@ static int in_list(const char *csv, const char *user) {
 // (find_file prototype declared earlier near access request forward decls)
 
 int nm_addaccess(const char *fname, const char *requestor, const char *mode, const char *target_user) {
-	int idx = find_file(fname); if (idx<0) return ERR_FILE_NOT_FOUND;
+	int idx = find_file(fname); 
+	if (idx<0) {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "FAILED file=%s requestor=%s target=%s mode=%s reason=FILE_NOT_FOUND", 
+		         fname, requestor, target_user, mode);
+		log_event_detailed("logs/nm.log", "NM", "ADDACCESS", requestor, "", 0, log_buf, 1);
+		return ERR_FILE_NOT_FOUND;
+	}
+	
 	char owner[64], readers[512], writers[512]; owner[0]=readers[0]=writers[0]='\0';
 	load_acl(fname, owner, sizeof(owner), readers, sizeof(readers), writers, sizeof(writers));
-	if (strcmp(owner, requestor)!=0) return ERR_PERMISSION_DENIED;
-	// Append target to readers and maybe writers if not present
-	if (!in_list(readers, target_user)) { if (*readers) strncat(readers, ",", sizeof(readers)-strlen(readers)-1); strncat(readers, target_user, sizeof(readers)-strlen(readers)-1); }
-	if (mode[0]=='W') {
-		if (!in_list(writers, target_user)) { if (*writers) strncat(writers, ",", sizeof(writers)-strlen(writers)-1); strncat(writers, target_user, sizeof(writers)-strlen(writers)-1); }
+	
+	if (strcmp(owner, requestor)!=0) {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "FAILED file=%s requestor=%s target=%s mode=%s owner=%s reason=NOT_OWNER", 
+		         fname, requestor, target_user, mode, owner);
+		log_event_detailed("logs/nm.log", "NM", "ADDACCESS", requestor, "", 0, log_buf, 1);
+		return ERR_PERMISSION_DENIED;
 	}
-	return write_acl(fname, owner, readers, writers);
+	
+	// Append target to readers and maybe writers if not present
+	if (!in_list(readers, target_user)) { 
+		if (*readers) strncat(readers, ",", sizeof(readers)-strlen(readers)-1); 
+		strncat(readers, target_user, sizeof(readers)-strlen(readers)-1); 
+	}
+	if (mode[0]=='W') {
+		if (!in_list(writers, target_user)) { 
+			if (*writers) strncat(writers, ",", sizeof(writers)-strlen(writers)-1); 
+			strncat(writers, target_user, sizeof(writers)-strlen(writers)-1); 
+		}
+	}
+	
+	int result = write_acl(fname, owner, readers, writers);
+	if (result == SUCCESS) {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "SUCCESS file=%s requestor=%s target=%s mode=%s permission=%s", 
+		         fname, requestor, target_user, mode, mode[0]=='W' ? "READ+WRITE" : "READ");
+		log_event_detailed("logs/nm.log", "NM", "ADDACCESS", requestor, "", 0, log_buf, 1);
+	} else {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "FAILED file=%s requestor=%s target=%s mode=%s reason=WRITE_ACL_ERROR", 
+		         fname, requestor, target_user, mode);
+		log_event_detailed("logs/nm.log", "NM", "ADDACCESS", requestor, "", 0, log_buf, 1);
+	}
+	
+	return result;
 }
 
 int nm_remaccess(const char *fname, const char *requestor, const char *target_user) {
-	int idx = find_file(fname); if (idx<0) return ERR_FILE_NOT_FOUND;
+	int idx = find_file(fname); 
+	if (idx<0) {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "FAILED file=%s requestor=%s target=%s reason=FILE_NOT_FOUND", 
+		         fname, requestor, target_user);
+		log_event_detailed("logs/nm.log", "NM", "REMACCESS", requestor, "", 0, log_buf, 1);
+		return ERR_FILE_NOT_FOUND;
+	}
+	
 	char owner[64], readers[512], writers[512]; owner[0]=readers[0]=writers[0]='\0';
 	load_acl(fname, owner, sizeof(owner), readers, sizeof(readers), writers, sizeof(writers));
-	if (strcmp(owner, requestor)!=0) return ERR_PERMISSION_DENIED;
+	
+	if (strcmp(owner, requestor)!=0) {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "FAILED file=%s requestor=%s target=%s owner=%s reason=NOT_OWNER", 
+		         fname, requestor, target_user, owner);
+		log_event_detailed("logs/nm.log", "NM", "REMACCESS", requestor, "", 0, log_buf, 1);
+		return ERR_PERMISSION_DENIED;
+	}
+	
 	// rebuild lists without target
 	char newr[512]="", neww[512]=""; char *save=NULL; char *tok=NULL; char tmp[512];
 	strncpy(tmp, readers, sizeof(tmp)-1); tok=strtok_r(tmp, ",", &save);
 	while (tok) { while(*tok==' ') tok++; size_t L=strlen(tok); while(L>0 && tok[L-1]==' ') tok[--L]='\0'; if (strcmp(tok,target_user)!=0){ if(*newr) strcat(newr, ","); strcat(newr, tok);} tok=strtok_r(NULL, ",", &save);}    
 	strncpy(tmp, writers, sizeof(tmp)-1); save=NULL; tok=strtok_r(tmp, ",", &save);
 	while (tok) { while(*tok==' ') tok++; size_t L=strlen(tok); while(L>0 && tok[L-1]==' ') tok[--L]='\0'; if (strcmp(tok,target_user)!=0){ if(*neww) strcat(neww, ","); strcat(neww, tok);} tok=strtok_r(NULL, ",", &save);}    
-	return write_acl(fname, owner, newr, neww);
+	
+	int result = write_acl(fname, owner, newr, neww);
+	if (result == SUCCESS) {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "SUCCESS file=%s requestor=%s target=%s removed_permissions=ALL", 
+		         fname, requestor, target_user);
+		log_event_detailed("logs/nm.log", "NM", "REMACCESS", requestor, "", 0, log_buf, 1);
+	} else {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "FAILED file=%s requestor=%s target=%s reason=WRITE_ACL_ERROR", 
+		         fname, requestor, target_user);
+		log_event_detailed("logs/nm.log", "NM", "REMACCESS", requestor, "", 0, log_buf, 1);
+	}
+	
+	return result;
 }
 
 // Access enforcement helpers
 int nm_check_read(const char *fname, const char *user) {
-	int idx = find_file(fname); if (idx<0) return ERR_FILE_NOT_FOUND;
+	int idx = find_file(fname); 
+	if (idx<0) {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "ACCESS_DENIED file=%s user=%s reason=FILE_NOT_FOUND", fname, user);
+		log_event_detailed("logs/nm.log", "NM", "CHECK_READ", user, "", 0, log_buf, 1);
+		return ERR_FILE_NOT_FOUND;
+	}
+	
 	char owner[64], readers[512], writers[512]; owner[0]=readers[0]=writers[0]='\0';
 	load_acl(fname, owner, sizeof(owner), readers, sizeof(readers), writers, sizeof(writers));
-	if (strcmp(owner,user)==0) return SUCCESS;
+	
+	if (strcmp(owner,user)==0) {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "ACCESS_GRANTED file=%s user=%s role=OWNER permission=READ", fname, user);
+		log_event_detailed("logs/nm.log", "NM", "CHECK_READ", user, "", 0, log_buf, 1);
+		return SUCCESS;
+	}
+	
 	// Writers also have read access (as per TA: -W flag gives both read and write)
-	if (in_list(readers, user) || in_list(writers, user)) return SUCCESS;
+	if (in_list(readers, user)) {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "ACCESS_GRANTED file=%s user=%s role=READER permission=READ", fname, user);
+		log_event_detailed("logs/nm.log", "NM", "CHECK_READ", user, "", 0, log_buf, 1);
+		return SUCCESS;
+	}
+	
+	if (in_list(writers, user)) {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "ACCESS_GRANTED file=%s user=%s role=WRITER permission=READ", fname, user);
+		log_event_detailed("logs/nm.log", "NM", "CHECK_READ", user, "", 0, log_buf, 1);
+		return SUCCESS;
+	}
+	
+	char log_buf[256];
+	snprintf(log_buf, sizeof(log_buf), "ACCESS_DENIED file=%s user=%s owner=%s reason=NO_READ_PERMISSION", fname, user, owner);
+	log_event_detailed("logs/nm.log", "NM", "CHECK_READ", user, "", 0, log_buf, 1);
 	return ERR_PERMISSION_DENIED;
 }
 int nm_check_write(const char *fname, const char *user) {
-	int idx = find_file(fname); if (idx<0) return ERR_FILE_NOT_FOUND;
+	int idx = find_file(fname); 
+	if (idx<0) {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "ACCESS_DENIED file=%s user=%s reason=FILE_NOT_FOUND", fname, user);
+		log_event_detailed("logs/nm.log", "NM", "CHECK_WRITE", user, "", 0, log_buf, 1);
+		return ERR_FILE_NOT_FOUND;
+	}
+	
 	char owner[64], readers[512], writers[512]; owner[0]=readers[0]=writers[0]='\0';
 	load_acl(fname, owner, sizeof(owner), readers, sizeof(readers), writers, sizeof(writers));
-	if (strcmp(owner,user)==0) return SUCCESS;
-	return in_list(writers, user) ? SUCCESS : ERR_PERMISSION_DENIED;
+	
+	if (strcmp(owner,user)==0) {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "ACCESS_GRANTED file=%s user=%s role=OWNER permission=WRITE", fname, user);
+		log_event_detailed("logs/nm.log", "NM", "CHECK_WRITE", user, "", 0, log_buf, 1);
+		return SUCCESS;
+	}
+	
+	if (in_list(writers, user)) {
+		char log_buf[256];
+		snprintf(log_buf, sizeof(log_buf), "ACCESS_GRANTED file=%s user=%s role=WRITER permission=WRITE", fname, user);
+		log_event_detailed("logs/nm.log", "NM", "CHECK_WRITE", user, "", 0, log_buf, 1);
+		return SUCCESS;
+	}
+	
+	char log_buf[256];
+	snprintf(log_buf, sizeof(log_buf), "ACCESS_DENIED file=%s user=%s owner=%s reason=NO_WRITE_PERMISSION", fname, user, owner);
+	log_event_detailed("logs/nm.log", "NM", "CHECK_WRITE", user, "", 0, log_buf, 1);
+	return ERR_PERMISSION_DENIED;
 }
 
 int nm_is_owner(const char *fname, const char *user) {
@@ -675,7 +830,44 @@ int nm_update_after_write(const char *fname, const char *user, int words, int ch
 // Mark file access (read/stream/info) updating last_access and user
 int nm_mark_access(const char *fname, const char *user) {
 	int idx = find_file(fname); if (idx < 0) return ERR_FILE_NOT_FOUND;
-	FileEntry *e = &files[idx]; time(&e->last_access); if (user && *user) strncpy(e->last_access_by, user, sizeof(e->last_access_by)-1); return SUCCESS;
+	FileEntry *e = &files[idx]; 
+	time(&e->last_access); 
+	if (user && *user) strncpy(e->last_access_by, user, sizeof(e->last_access_by)-1);
+	
+	// Save last_access to metadata for persistence
+	char mpath[512]; snprintf(mpath, sizeof(mpath), "data/%s.meta", fname);
+	char owner[64]="", readers[512]="", writers[512]="", lastmod[64]="";
+	int words=0, chars=0;
+	FILE *m = fopen(mpath, "r");
+	if (m) {
+		char line[256];
+		while (fgets(line, sizeof(line), m)) {
+			if (strncmp(line, "owner=", 6) == 0) { strncpy(owner, line+6, sizeof(owner)-1); }
+			else if (strncmp(line, "readers=", 8) == 0) { strncpy(readers, line+8, sizeof(readers)-1); }
+			else if (strncmp(line, "writers=", 8) == 0) { strncpy(writers, line+8, sizeof(writers)-1); }
+			else if (strncmp(line, "words=", 6) == 0) { words = atoi(line+6); }
+			else if (strncmp(line, "chars=", 6) == 0) { chars = atoi(line+6); }
+			else if (strncmp(line, "last_modified=", 14) == 0) { strncpy(lastmod, line+14, sizeof(lastmod)-1); }
+		}
+		fclose(m);
+	}
+	// Trim newlines
+	char *arr[4]={owner,readers,writers,lastmod};
+	for (int i=0;i<4;i++){ size_t L=strlen(arr[i]); if(L>0&&(arr[i][L-1]=='\n'||arr[i][L-1]=='\r')) arr[i][L-1]='\0'; }
+	
+	// Write back with updated last_access
+	char access_time[64];
+	struct tm *tm_info = localtime(&e->last_access);
+	strftime(access_time, sizeof(access_time), "%Y-%m-%d %H:%M:%S", tm_info);
+	
+	m = fopen(mpath, "w");
+	if (m) {
+		fprintf(m, "owner=%s\nreaders=%s\nwriters=%s\nwords=%d\nchars=%d\nlast_modified=%s\nlast_access=%s\n",
+			owner, readers, writers, words, chars, lastmod, access_time);
+		fclose(m);
+	}
+	
+	return SUCCESS;
 }
 
 // O(1) hash-based file lookup with LRU cache
@@ -710,6 +902,19 @@ void nm_get_cache_stats(unsigned long *hits, unsigned long *misses, int *size) {
 	if (hits) *hits = cache_hits;
 	if (misses) *misses = cache_misses;
 	if (size) *size = cache_count;
+}
+
+// Public wrapper for file lookup (returns file index)
+int nm_find_file_index(const char *fname) {
+	return find_file(fname);
+}
+
+// Update the storage server ID for an existing file
+void nm_update_file_ss(int file_index, int ss_id) {
+	if (file_index < 0 || file_index >= file_count) return;
+	files[file_index].ss_id = ss_id;
+	// Also update replica if needed
+	files[file_index].replica_ss_id = find_next_alive_ss(ss_id, ss_id, -1);
 }
 
 // ============================================================================
@@ -859,11 +1064,13 @@ int nm_sync_recovered_ss(int ss_id) {
 	if (ss_id<0 || ss_id>=server_count) return ERR_BAD_REQUEST;
 	servers[ss_id].alive = 1; time(&servers[ss_id].last_seen);
 	
+	int count_as_primary = 0, count_as_replica = 0;
 	int synced_as_primary = 0, synced_as_replica = 0;
 	
 	// Case 1: Files where this server is PRIMARY - sync FROM replica if available
 	for (int i=0;i<file_count;i++) {
 		if (files[i].ss_id == ss_id) {
+			count_as_primary++;
 			int replica = files[i].replica_ss_id;
 			if (replica >= 0 && nm_server_is_alive(replica)) {
 				// Recovered primary should fetch data from its replica
@@ -881,10 +1088,11 @@ int nm_sync_recovered_ss(int ss_id) {
 	// Case 2: Files where this server is REPLICA - sync FROM primary if available
 	for (int i=0;i<file_count;i++) {
 		if (files[i].replica_ss_id == ss_id) {
+			count_as_replica++;
 			int primary = files[i].ss_id;
 			if (!nm_server_is_alive(primary)) continue; // primary not available
 			// Trigger replication for this file to refresh recovered replica
-			printf("  → Syncing '%s' to recovered replica SS%d from primary SS%d\n", 
+				printf("  → Syncing '%s' to recovered replica SS%d from primary SS%d\n", 
 				   files[i].filename, ss_id, primary);
 			replicate_file_async(files[i].filename);
 			synced_as_replica++;
@@ -892,9 +1100,7 @@ int nm_sync_recovered_ss(int ss_id) {
 	}
 	
 	printf("  → SS%d recovery complete: %d files as primary, %d files as replica\n", 
-		   ss_id, synced_as_primary, synced_as_replica);
-	
-	return SUCCESS;
+		   ss_id, count_as_primary, count_as_replica);	return SUCCESS;
 }
 
 // Build a simple listing into payload text. flags: bit0 = -a, bit1 = -l, bit2 = -s (show SS)
@@ -908,14 +1114,14 @@ int nm_view(int flags, const char *user, char *out, size_t outlen) {
 		// Table header
 		if (show_ss) {
 			off += snprintf(out+off, outlen-off, "-------------------------------------------------------------------------------------\n");
-			off += snprintf(out+off, outlen-off, "|  %-10s| %-5s| %-5s| %-18s| %-7s| %-20s|\n",
+			off += snprintf(out+off, outlen-off, "|  %-20s| %-5s| %-5s| %-18s| %-7s| %-20s|\n",
 				"Filename", "Words", "Chars", "Last Access Time", "Owner", "Storage");
-			off += snprintf(out+off, outlen-off, "|------------|-------|-------|------------------|-------|----------------------|\n");
+			off += snprintf(out+off, outlen-off, "|----------------------|-------|-------|------------------|-------|----------------------|\n");
 		} else {
-			off += snprintf(out+off, outlen-off, "---------------------------------------------------------\n");
-			off += snprintf(out+off, outlen-off, "|  %-10s| %-5s| %-5s| %-18s| %-7s|\n",
+			off += snprintf(out+off, outlen-off, "-------------------------------------------------------------------------\n");
+			off += snprintf(out+off, outlen-off, "|  %-20s| %-5s| %-5s| %-18s| %-7s|\n",
 				"Filename", "Words", "Chars", "Last Access Time", "Owner");
-			off += snprintf(out+off, outlen-off, "|------------|-------|-------|------------------|-------|\n");
+			off += snprintf(out+off, outlen-off, "|----------------------|-------|-------|------------------|-------|\n");
 		}
 	}
 	for (int i = 0; i < file_count; ++i) {
@@ -931,6 +1137,20 @@ int nm_view(int flags, const char *user, char *out, size_t outlen) {
 			load_meta_for(e->filename, &w, &c, owner_buf, sizeof(owner_buf));
 			const char *owner_disp = (owner_buf[0] ? owner_buf : e->owner);
 			
+			// Truncate filename if too long, preserving other columns
+			char display_filename[22];
+			if (strlen(e->filename) > 20) {
+				// Truncate with ellipsis
+				strncpy(display_filename, e->filename, 17);
+				display_filename[17] = '.';
+				display_filename[18] = '.';
+				display_filename[19] = '.';
+				display_filename[20] = '\0';
+			} else {
+				strncpy(display_filename, e->filename, sizeof(display_filename) - 1);
+				display_filename[sizeof(display_filename) - 1] = '\0';
+			}
+			
 			if (show_ss) {
 				// Show SS information
 				char ss_brief[32];
@@ -943,12 +1163,12 @@ int nm_view(int flags, const char *user, char *out, size_t outlen) {
 					const char *p_stat = nm_server_is_alive(e->ss_id) ? "✓" : "✗";
 					snprintf(ss_brief, sizeof(ss_brief), "P:%d%s", e->ss_id, p_stat);
 				}
-				off += snprintf(out+off, outlen-off, "|  %-10.10s| %5d| %5d| %-18s| %-7.7s| %-20.20s|\n",
-					e->filename, w, c, timebuf, owner_disp, ss_brief);
+				off += snprintf(out+off, outlen-off, "|  %-20s| %5d| %5d| %-18s| %-7.7s| %-20.20s|\n",
+					display_filename, w, c, timebuf, owner_disp, ss_brief);
 			} else {
 				// show only timestamp in table per spec; detailed user access shown in INFO
-				off += snprintf(out+off, outlen-off, "|  %-10.10s| %5d| %5d| %-18s| %-7.7s|\n",
-					e->filename, w, c, timebuf, owner_disp);
+				off += snprintf(out+off, outlen-off, "|  %-20s| %5d| %5d| %-18s| %-7.7s|\n",
+					display_filename, w, c, timebuf, owner_disp);
 			}
 		} else {
 			off += snprintf(out+off, outlen-off, "%s\n", e->filename);
@@ -976,7 +1196,16 @@ int nm_view(int flags, const char *user, char *out, size_t outlen) {
 					if (stat(fpath, &st)==0) { mt = st.st_mtime; } else { time(&mt); }
 					struct tm *tm_info = localtime(&mt); strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M", tm_info);
 					if (long_fmt) {
-						off += snprintf(out+off, outlen-off, "|  %-10.10s| %5d| %5d| %-18s| %-7.7s|\n", base, w, c, timebuf, owner_buf[0]?owner_buf:"-");
+						// Truncate filename if longer than 20 characters
+						char display_filename[24];
+						if (strlen(base) > 20) {
+							strncpy(display_filename, base, 17);
+							display_filename[17] = '\0';
+							strcat(display_filename, "...");
+						} else {
+							strcpy(display_filename, base);
+						}
+						off += snprintf(out+off, outlen-off, "|  %-20s| %5d| %5d| %-18s| %-7.7s|\n", display_filename, w, c, timebuf, owner_buf[0]?owner_buf:"-");
 					} else {
 						off += snprintf(out+off, outlen-off, "%s\n", base);
 					}
@@ -988,9 +1217,9 @@ int nm_view(int flags, const char *user, char *out, size_t outlen) {
 	}
 	if (long_fmt) {
 		if (show_ss) {
-			off += snprintf(out+off, outlen-off, "-------------------------------------------------------------------------------------\n");
+			off += snprintf(out+off, outlen-off, "---------------------------------------------------------------------------------------------------\n");
 		} else {
-			off += snprintf(out+off, outlen-off, "---------------------------------------------------------\n");
+			off += snprintf(out+off, outlen-off, "-----------------------------------------------------------------------\n");
 		}
 	}
 	return SUCCESS;
